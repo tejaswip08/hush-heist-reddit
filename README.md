@@ -7,7 +7,7 @@ Every night a new job posts to the subreddit: steal one painting from a small bl
 ## Layout
 
 - `src/shared/sim.ts` – all game rules (movement, guards, light, coin, vents, stars) and a BFS solver. Shared by client, server and tests.
-- `src/shared/levels.ts` – one entry per night. Nights cycle through the list, starting Nov 18, 2026 (UTC).
+- `src/shared/levels.ts` – one entry per night. Nights cycle through the list, starting Nov 23, 2026 (UTC).
 - `src/client/three/` – the 3D diorama board (three.js): models, lighting, camera, input.
 - `src/client/game.ts` / `game.html` – the HUD, controls, intro, caught and result screens.
 - `src/client/splash.*` – the inline post preview in the feed.

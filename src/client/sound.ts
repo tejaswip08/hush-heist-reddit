@@ -13,8 +13,6 @@ export class Sound {
   private ambience: GainNode | null = null;
   private noise: AudioBuffer | null = null;
   private cricketTimer = 0;
-  private rainGain: GainNode | null = null;
-  private rainLevel = 0;
   muted: boolean;
 
   constructor() {
@@ -266,49 +264,22 @@ export class Sound {
     this.tone(v, 'sine', 130.8, t, 1.4, 0.25);
   }
 
+  /** One rising chime per star on the result card. */
+  star(i: number) {
+    const v = this.voice();
+    if (!v) return;
+    const t = v.ctx.currentTime;
+    const f = [784, 988, 1319][i] ?? 784;
+    this.tone(v, 'triangle', f, t, 0.5, 0.2);
+    this.tone(v, 'sine', f * 2, t, 0.3, 0.06);
+  }
+
   /** Guards hear a noise: a little questioning blip. */
   alert() {
     const v = this.voice();
     if (!v) return;
     const t = v.ctx.currentTime;
     this.tone(v, 'sine', 660, t + 0.2, 0.12, 0.12, 880);
-  }
-
-  /** Rolling thunder, arriving a moment after the flash like a distant strike. */
-  thunder() {
-    const v = this.voice();
-    if (!v || !this.noise) return;
-    const t = v.ctx.currentTime + 0.5 + Math.random() * 1.2;
-    const src = v.ctx.createBufferSource();
-    src.buffer = this.noise;
-    const f = v.ctx.createBiquadFilter();
-    f.type = 'lowpass';
-    f.frequency.setValueAtTime(900, t);
-    f.frequency.exponentialRampToValueAtTime(120, t + 2.5);
-    const g = v.ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.9, t + 0.05);
-    g.gain.exponentialRampToValueAtTime(0.35, t + 0.6);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 3.2);
-    src.connect(f).connect(g).connect(v.out);
-    src.start(t);
-    src.stop(t + 3.3);
-    this.tone(v, 'sine', 48, t, 2.4, 0.5, 30);
-  }
-
-  /** Two thumps: a guard is close. */
-  heartbeat() {
-    const v = this.voice();
-    if (!v) return;
-    const t = v.ctx.currentTime + 0.05;
-    this.tone(v, 'sine', 62, t, 0.18, 0.75, 40);
-    this.tone(v, 'sine', 58, t + 0.22, 0.2, 0.55, 38);
-  }
-
-  /** Follow the shower on screen: 0 is silent, 1 a soft steady patter. */
-  setRain(amount: number) {
-    this.rainLevel = Math.max(0, Math.min(1, amount)) * 0.09;
-    if (this.rainGain && this.ctx) this.rainGain.gain.setTargetAtTime(this.rainLevel, this.ctx.currentTime, 0.5);
   }
 
   /* ----------------------------------------------------------- ambience */
@@ -330,25 +301,11 @@ export class Sound {
     room.connect(lp).connect(rg).connect(out);
     room.start();
 
-    // Rain, muffled like it's on the windows; silent until a shower comes.
-    const rain = ctx.createBufferSource();
-    rain.buffer = this.noise;
-    rain.loop = true;
-    const lowpass = ctx.createBiquadFilter();
-    lowpass.type = 'lowpass';
-    lowpass.frequency.value = 1100;
-    const highpass = ctx.createBiquadFilter();
-    highpass.type = 'highpass';
-    highpass.frequency.value = 250;
-    this.rainGain = ctx.createGain();
-    this.rainGain.gain.value = this.rainLevel;
-    rain.connect(lowpass).connect(highpass).connect(this.rainGain).connect(out);
-    rain.start(0, 0.7);
 
     for (const [f, detune] of [
-      [41.2, 0],
-      [61.7, 7],
-      [87.3, -5],
+      [55, 0],
+      [82.4, 4],
+      [110, -3],
     ] as const) {
       const osc = ctx.createOscillator();
       osc.type = 'sine';

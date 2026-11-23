@@ -21,9 +21,10 @@ A daily stealth-heist game that runs inside Reddit posts. Built for **Reddit's G
 
 **How a turn works**
 - The map is a small top-down grid of rooms, halls, and doors.
-- You move one tile per turn (tap a neighbouring tile, swipe, or use the arrow keys or WASD). Then every guard takes one step.
+- You move one tile per turn (tap a neighbouring tile, or use the arrow keys or WASD). Then every guard takes one step.
+- **Camera:** drag to turn and tilt the model, pinch or scroll to zoom, and tap **View** to reset. A press only counts as a tap (a move) if it doesn't drag.
 - Guards see **3 tiles ahead, but only on lit tiles**. In the dark they only notice you if you're right in front of them.
-- Take the painting, then reach the exit.
+- Do tonight's job, then reach the exit. Six job types rotate: **steal a painting**; **cash run** (grab every stack of cash); **crack the safe** (stand on it, unseen, for 2 turns); **the swap** (pick up a forgery first, then swap it for the painting); **plant evidence** (leave the file on a desk while no guard can see you); **catch the boss** (knock out the white-suited lieutenant, who has a bodyguard).
 
 **Tools and twists**
 | Thing | What it does |
@@ -33,38 +34,38 @@ A daily stealth-heist game that runs inside Reddit posts. Built for **Reddit's G
 | Light switch | Step on it to black out a room (step again to turn it back on) |
 | Vent | Step in to pop out at the linked vent |
 | Coin | Toss within 3 tiles; nearby guards turn to look for 2 turns |
-| Takedown | Step onto a guard from behind or the side to knock them out (they're set aside next to the board) |
+| Takedown | Step onto a guard from behind or the side to knock them out. They topple, hop into the painted **"Knocked out"** box on the pavement, stand back up, and glare at Wren wherever Wren goes, fuming (red anger mark) and stomping |
 | Potted palm | Stand in it and no one can see you (but a guard walking into you still catches you) |
 | Guard dog | Smells you 2 tiles ahead, light or dark; no flashlight |
 | Guard uniform | Take it off a coat rack: guards stop recognising you for the rest of the job (dogs still smell you) |
 | Gold key and door | A locked door blocks moves and sight; picking up its key swings every door of that colour open |
 
 **Scoring (3 stars a night)**
-1. Escape with the painting
+1. Finish the job and escape
 2. Do it in par moves or fewer (par = the true optimum, computed by a solver)
 3. Keep the night's rule, for example "never step into the light" or "no takedowns"
 
 **The daily loop:** one new job per night (UTC). The game keeps your streak and your best run per night, and shows "X thieves escaped tonight, Y% at par". The result card has a spoiler-free "Copy result" button for posting in the comments.
 
-**Look:** a horror-tinged scale model at night (three.js). Each level is one building on its lot in a rain-soaked city: asphalt streets, street lamps, and blocks of buildings with a few lit windows fading into fog. A storm rolls over: occasional rain showers (15–30 s, with long dry spells), lightning flashes that light the whole city, flickering lamps, and a cold, desaturated grade. Five settings change the floor, obstacles and decor per level: **gallery** (marble, display walls with paintings, busts, palms), **mansion** (parquet, dark panelled walls with candle sconces, candelabras), **library** (patterned red carpet, bookshelves with rows of books, globes), **garden** (grass and stepping stones, hedges, dead trees, gravestones), **cellar** (stone flags, crate stacks, barrels). Figurines have jointed legs and arms, hands, shaped torsos and faces: Wren in a long hooded coat with a mask, satchel and lantern; guards in caps, blazers, ties and belts with raised flashlights. Rendered with reflections, ambient occlusion (desktop), bloom, tilt-shift, bevelled edges and varnished pieces; the camera glides in, pieces land with dust, knocked-out guards topple off the board.
+**Look:** Hitman GO-style scale models (three.js). Each level is one building on a deep **moulded wooden display base with a brass plaque** ("Night 6 · Good boy"): tall facades with arched windows, doors and wall lanterns along the back and left, low balustrades at the front and right, and a **non-playable apron** in front and to the right that brings the model to life — **bystander figurines** (couples chatting, a lady in a red coat, a man in a white suit and panama, a waiter with a tray, guests seated at café tables under parasols) who shift their weight and look around, plus palms in planters, lamp posts and a parked car. **Every episode has its own sky and light** (10 moods). Pieces: Wren the noir burglar (fedora, trench coat, red scarf, lantern) and guards in coloured bomber jackets with flashlights. Static scenery and figurines are batched into a few meshes per material (about 360 draw calls, ~160k triangles) so it stays smooth on phones; add `?debug` to log draw calls locally.
 
-**Sound:** all synthesised in code (no audio files): footsteps, takedown thud, key chime, door creak, uniform rustle, coin clinks, light switch, vent clang, painting pickup, a spotted sting, an escape fanfare, night ambience (room tone, low drone, crickets, and a soft muffled patter only while a shower is passing), thunder after each lightning flash, and a heartbeat when a guard is within 2 tiles. A Sound on/off button remembers your choice.
+**Sound:** all synthesised in code (no audio files): footsteps, takedown thud, key chime, door creak, uniform rustle, coin clinks, light switch, vent clang, painting pickup, a spotted sting, an escape fanfare, and night ambience (room tone, low drone, crickets). A Sound on/off button remembers your choice.
 
 ## What's built
 
 - Full game rules plus a solver that checks every level is winnable and sets its exact par
-- 9 nights: *The quiet wing* (tutorial), *The night watch* (takedowns), *The long gallery* (hiding, no takedowns), *Lights out*, *The back way*, *Good boy* (guard dog), *Dress code* (disguise), *The locked wing* (key and door), *Heads or tails*. They repeat after night 9.
+- 62 nights (about two months), repeating after night 62. Nights 1–14 teach the mechanics: 1 quiet wing (tutorial), 2 night watch, 3 long gallery, 4 **cash run**, 5 lights out, 6 back way, 7 **the vault** (safe), 8 good boy (dog), 9 dress code (uniform), 10 **the swap**, 11 locked wing (key/door), 12 **boss night**, 13 heads or tails (coin), 14 **evidence**. Nights 15–62 are a six-chapter story — *Lisbon*, *The auction*, *The family business*, *The lighthouse*, *The Curator* — whose clues reveal that Wren's client, the Curator, founded the Gilded Circle; the finale (night 62) is catching him.
 - Gameplay modelled on Hitman GO: node-and-line board, turn-based guards, takedowns from behind, hiding plants, dogs, disguises, keys and locked doors, distractions, trapdoor-style vents, and 3 optional objectives per level
 - Local preview can pick a level with `?night=7` (only used when the Reddit server isn't reachable)
-- Intro card, "Spotted" screen, and result card with stars, streak, community stats, and the clue
-- An in-feed splash card for the post
+- Case-file screens: a **briefing dossier** (case number, the night's stolen painting with its title, the three star goals, folded how-to-play), live **goal chips** in the HUD (painting, moves vs par, tonight's rule), a **"Spotted" stamp** with the reason and a tip, and a **"Case closed" result** (rubber stamp, recovered painting, stars that pop in with chimes, moves bar vs par, streak flame, the clue on a pinned typed note, share button, live countdown to the next job)
+- Every night has its own generated target painting with a title (paintings.ts), shown on the 3D easel and the cards
+- An in-feed splash card with a **live replay** of tonight's level behind it (a light 2D board tilted like the diorama: guards run their real patrols and turns, flashlights sweep and danger tiles pulse, while Wren waits at the start, so it never spoils the route. Horror mood: the board sits in darkness lit only by lamps, Wren's flickering lantern and sweeping flashlights; the hound's red eyes glow; lightning double-flashes; fog drifts; film grain; a red heartbeat pulses round the card when a guard gets close; a blinking "Live · guards on patrol" tag. Pauses off-screen and respects reduced motion), and the night's case file: the episode's sky colours behind a small dossier with the stolen painting, title, brief, your streak and best, how many thieves escaped tonight, and an "Escaped"/"Flawless" stamp once you've played
 - Server: streaks, best runs, nightly stats (Redis), a daily auto-post (scheduler), a mod menu item "Post tonight's Hush job", and a post created on app install
 - Mobile layout
 - Runs live in a Devvit playtest subreddit
 
 ## Still to do before Dec 8
 
-- [ ] About 11 more levels (target 20+)
 - [ ] Saturday community vote on Sunday's boss twist
 - [ ] Devvit Journeys events (the judges call these out for streaks and analytics)
 - [ ] Art polish: lamp fixtures, more props, test frame rate on low-end phones
@@ -89,7 +90,7 @@ A daily stealth-heist game that runs inside Reddit posts. Built for **Reddit's G
 src/
   shared/
     sim.ts           Game rules (moves, guards, light, coin, vents, stars) + BFS solver
-    levels.ts        One entry per night; night 1 = Nov 18, 2026 (UTC)
+    levels.ts        One entry per night; night 1 = Nov 23, 2026 (UTC), launch day
     levels.test.ts   Checks each level is solvable and its par is exact
     api.ts           Request/response types shared by client and server
   client/
@@ -139,7 +140,7 @@ python3 -m http.server 4173 --directory dist/client
 ## Adding a level
 
 1. Add an entry to `LEVELS` in `src/shared/levels.ts` with `par: 0`.
-   - **Map:** `#` wall, `.` floor, `S` start, `P` painting, `E` exit, `H` potted palm, `U` guard uniform. Doors and keys go in `doors` and `keys`.
+   - **Map:** `#` wall, `.` floor, `S` start, `P` painting, `E` exit, `$` cash, `B` safe, `F` forgery, `D` desk (set `job`, and `cashNeeded` for cash runs; mark one guard `boss: true` for boss jobs), `H` potted palm, `U` guard uniform. Doors and keys go in `doors` and `keys`.
    - **Light:** `1` lit, `0` dark, or a letter for "lit while that switch group is on"
    - Add guards (`patrol` with a route, or `sentry` with facings), vents, switches, coins, a rule, a brief, and a clue.
 2. Run `npm run test:unit`. It fails with the real par, or tells you the level can't be solved.

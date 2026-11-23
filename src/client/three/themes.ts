@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Theme } from '../../shared/sim';
 import { type PropName, prop } from './assets';
+import type { Palette } from './architecture';
 import { makeCanvas, paintFloor, rng } from '../art';
 import {
   type FloorPainter,
@@ -72,6 +73,8 @@ export type ThemeStyle = {
   decor: (seed: number, tall: boolean) => THREE.Object3D | null;
   /** Edge railing facing the floor; null keeps the default balustrade. */
   rail?: (rot: number, seed: number) => THREE.Object3D | null;
+  /** The building around the level */
+  palette: Palette;
 };
 
 const lift = (o: THREE.Object3D) => {
@@ -479,6 +482,7 @@ const globe = (): THREE.Object3D => {
 
 export const THEMES: Record<Theme, ThemeStyle> = {
   gallery: {
+    palette: { wall: 0xe6cbbb, trim: 0xf7efe7, litChance: 0.25 },
     floor: paintMarble,
     ink: 'rgba(30,30,34,0.72)',
     terrace: MAT.terrace,
@@ -501,6 +505,7 @@ export const THEMES: Record<Theme, ThemeStyle> = {
     },
   },
   mansion: {
+    palette: { wall: 0x6e7b5d, trim: 0xdcd6c3, litChance: 0.45 },
     floor: paintParquet,
     ink: 'rgba(235,215,170,0.55)',
     terrace: matte(0x3b3632, 0.85),
@@ -523,6 +528,7 @@ export const THEMES: Record<Theme, ThemeStyle> = {
     },
   },
   library: {
+    palette: { wall: 0xb9705a, trim: 0xf1e4d2, litChance: 0.35 },
     floor: paintCarpet,
     ink: 'rgba(230,190,120,0.6)',
     terrace: matte(0x2e2119, 0.75),
@@ -545,6 +551,7 @@ export const THEMES: Record<Theme, ThemeStyle> = {
     },
   },
   garden: {
+    palette: { wall: 0x5f6668, trim: 0xc2bcaf, litChance: 0.3 },
     floor: paintGrass,
     ink: 'rgba(230,225,210,0.55)',
     terrace: matte(0x3d4236, 0.95),
@@ -580,6 +587,7 @@ export const THEMES: Record<Theme, ThemeStyle> = {
     rail: (rot, seed) => fenceRail(rot, rng(seed)() < 0.3),
   },
   cellar: {
+    palette: { wall: 0x6b6056, trim: 0xb3a797, litChance: 0.3 },
     floor: paintFlagstone,
     ink: 'rgba(230,220,200,0.5)',
     terrace: matte(0x45403a, 0.95),

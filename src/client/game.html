@@ -14,12 +14,12 @@
           <span class="night" id="hud-night">Night</span>
           <span class="job" id="hud-job"></span>
         </div>
-        <div class="hud-stats">
-          <span>Moves <b id="hud-moves">0</b></span>
-          <span>Par <b id="hud-par">0</b></span>
-          <span class="painting" id="hud-painting">Painting: not yet</span>
-        </div>
-        <p class="hud-rule" id="hud-rule"></p>
+        <ul class="chips" aria-label="Tonight's goals">
+          <li class="chip" id="chip-painting"><i aria-hidden="true"></i><span id="hud-job-goal">Painting</span></li>
+          <li class="chip" id="chip-par"><i aria-hidden="true"></i>Moves <b id="hud-moves">0</b>/<span id="hud-par">0</span></li>
+          <li class="chip" id="chip-rule"><i aria-hidden="true"></i><span id="hud-rule"></span></li>
+          <li class="chip item" id="chip-items" hidden></li>
+        </ul>
       </header>
 
       <main id="board" aria-label="Game board"></main>
@@ -28,53 +28,103 @@
         <button id="btn-wait" type="button">Wait</button>
         <button id="btn-coin" type="button">Coin <span id="coin-count"></span></button>
         <button id="btn-restart" type="button">Restart</button>
+        <button id="btn-view" type="button" title="Reset the camera">View</button>
         <button id="btn-sound" type="button" aria-pressed="true">Sound on</button>
       </footer>
 
       <p class="hint" id="hint" hidden></p>
+      <p class="coach" id="coach" role="status" hidden></p>
 
+      <!-- Briefing: a case file for tonight's job -->
       <section class="overlay" id="intro" hidden>
-        <div class="card">
-          <p class="eyebrow" id="intro-night"></p>
-          <h1 id="intro-title"></h1>
-          <p class="brief" id="intro-brief"></p>
-          <ul class="legend">
-            <li><span class="swatch you"></span>You. Tap a tile next to you, or swipe.</li>
-            <li><span class="swatch seen"></span>Guards see 3 tiles ahead, but only in the light. Dogs smell 2 tiles, light or dark.</li>
-            <li><span class="swatch ko"></span>Step onto a guard from behind or the side to knock them out. Hide in potted palms. A guard uniform fools guards (not dogs), and gold keys open gold doors.</li>
-            <li><span class="swatch frame"></span>Take the painting, then reach the exit.</li>
-          </ul>
-          <p class="rule" id="intro-rule"></p>
-          <button class="primary" id="btn-start" type="button">Start the job</button>
+        <div class="dossier">
+          <div class="tab">Case file <span id="intro-case"></span></div>
+          <div class="paper">
+            <div class="brief-head">
+              <figure class="frame">
+                <canvas id="intro-art" width="240" height="180" aria-hidden="true"></canvas>
+                <figcaption id="intro-art-name"></figcaption>
+              </figure>
+              <div>
+                <p class="eyebrow" id="intro-night"></p>
+                <h1 id="intro-title"></h1>
+                <p class="brief" id="intro-brief"></p>
+              </div>
+            </div>
+            <h2 class="section">Tonight's goals</h2>
+            <ol class="goals" id="intro-goals"></ol>
+            <details class="howto" id="intro-howto">
+              <summary>How to play</summary>
+              <ul class="legend">
+                <li><span class="swatch you"></span>Tap a tile next to Wren to move. Guards move after you. Drag to look around, pinch or scroll to zoom.</li>
+                <li><span class="swatch seen"></span>Guards see 3 tiles ahead, but only in the light. Dogs smell 2 tiles, light or dark.</li>
+                <li><span class="swatch ko"></span>Step onto a guard from behind or the side to knock them out. Hide in potted palms.</li>
+                <li><span class="swatch frame-ico"></span>A uniform fools guards (not dogs). Gold keys open gold doors.</li>
+              </ul>
+            </details>
+            <button class="primary big" id="btn-start" type="button">Take the job</button>
+          </div>
         </div>
       </section>
 
+      <!-- Caught -->
       <section class="overlay" id="caught" hidden>
-        <div class="card">
-          <p class="eyebrow">Spotted</p>
-          <h1>Hush. Try again.</h1>
-          <p class="brief" id="caught-text"></p>
-          <button class="primary" id="btn-retry" type="button">Retry</button>
+        <div class="dossier">
+          <div class="paper center">
+            <div class="stamp red" aria-hidden="true">Spotted</div>
+            <h1>Hush. Try again.</h1>
+            <p class="brief" id="caught-text"></p>
+            <p class="tip" id="caught-tip"></p>
+            <button class="primary big" id="btn-retry" type="button">Try again</button>
+          </div>
         </div>
       </section>
 
+      <!-- Result: case closed -->
       <section class="overlay" id="result" hidden>
-        <div class="card">
-          <p class="eyebrow" id="result-night"></p>
-          <h1>Clean escape</h1>
-          <p class="stars" id="result-stars" aria-live="polite"></p>
-          <ul class="checks" id="result-checks"></ul>
-          <div class="tiles">
-            <div><span>Moves</span><b id="result-moves"></b></div>
-            <div><span>Streak</span><b id="result-streak">–</b></div>
+        <div class="dossier">
+          <div class="tab">Case closed</div>
+          <div class="paper center">
+            <div class="stamp" id="result-stamp" aria-hidden="true">Escaped</div>
+            <p class="eyebrow" id="result-night"></p>
+            <figure class="frame trophy">
+              <canvas id="result-art" width="240" height="180" aria-hidden="true"></canvas>
+              <figcaption id="result-art-name"></figcaption>
+            </figure>
+            <div class="stars" id="result-stars" role="img"></div>
+            <ol class="goals" id="result-checks"></ol>
+            <div class="tiles">
+              <div class="tile">
+                <span>Moves</span>
+                <b id="result-moves"></b>
+                <div class="bar"><i id="result-bar"></i></div>
+                <small id="result-par"></small>
+              </div>
+              <div class="tile">
+                <span>Streak</span>
+                <b><span class="flame" aria-hidden="true"></span><span id="result-streak">–</span></b>
+                <small>nights in a row</small>
+              </div>
+            </div>
+            <p class="community" id="result-community"></p>
+            <div class="board-list" id="result-board" hidden>
+              <h2 class="section">Tonight’s best thieves</h2>
+              <ol id="result-board-rows"></ol>
+            </div>
+            <div class="note">
+              <span class="pin" aria-hidden="true"></span>
+              <p class="clue" id="result-clue"></p>
+            </div>
+            <div class="row">
+              <button id="btn-again" type="button">Replay</button>
+              <button class="primary" id="btn-comment" type="button">Post to comments</button>
+            </div>
+            <div class="row small">
+              <button id="btn-copy" type="button">Copy result</button>
+              <button id="btn-join" type="button" hidden>Join for tomorrow’s job</button>
+            </div>
+            <p class="next">Next job in <b id="result-next">--:--:--</b></p>
           </div>
-          <p class="community" id="result-community"></p>
-          <p class="clue" id="result-clue"></p>
-          <div class="row">
-            <button id="btn-again" type="button">Play again</button>
-            <button class="primary" id="btn-copy" type="button">Copy result</button>
-          </div>
-          <p class="next" id="result-next"></p>
         </div>
       </section>
     </div>

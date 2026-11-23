@@ -9,14 +9,29 @@
     />
     <title>Hush</title>
   </head>
-  <body class="app">
-    <div class="envelope">
-      <p class="eyebrow" id="night">Tonight’s job</p>
-      <h1 class="logo">Hush</h1>
-      <p class="title" id="title"></p>
-      <p class="brief" id="brief"></p>
-      <button class="start" id="start-button" type="button">Take the job</button>
-      <p class="meta" id="meta"></p>
+  <body class="app" id="app">
+    <!-- Live replay of tonight's level, tilted like the diorama -->
+    <div class="stage" aria-hidden="true">
+      <canvas id="demo"></canvas>
+    </div>
+    <div class="fog" aria-hidden="true"></div>
+    <p class="live"><i aria-hidden="true"></i>Live · guards on patrol</p>
+    <div class="dossier">
+      <div class="tab"><span class="logo">Hush</span> · Case file <span id="case"></span></div>
+      <div class="paper">
+        <div class="stamp" id="stamp" hidden></div>
+        <figure class="frame">
+          <canvas id="art" width="240" height="180" aria-hidden="true"></canvas>
+          <figcaption id="art-name"></figcaption>
+        </figure>
+        <div class="body">
+          <p class="eyebrow" id="night">Tonight's job</p>
+          <h1 class="title" id="title"></h1>
+          <p class="brief" id="brief"></p>
+          <p class="meta" id="meta"></p>
+          <button class="start" id="start-button" type="button">Take the job</button>
+        </div>
+      </div>
     </div>
     <script type="module" src="splash.ts" defer></script>
   </body>

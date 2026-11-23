@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { solve, initialState, step, findTile, isWall } from './sim.ts';
+import { solve, initialState, step, findTile, isWall, countTiles } from './sim.ts';
 import { LEVELS, levelForNight, nightForDate } from './levels.ts';
 
 for (const level of LEVELS) {
@@ -9,7 +9,15 @@ for (const level of LEVELS) {
     for (const row of level.map) assert.equal(row.length, width, 'map rows differ in width');
     assert.equal(level.light.length, level.map.length, 'light rows != map rows');
     for (const row of level.light) assert.equal(row.length, width, 'light rows differ in width');
-    for (const ch of ['S', 'P', 'E']) findTile(level, ch);
+    for (const ch of ['S', 'E']) findTile(level, ch);
+    // Each job needs its own pieces on the map.
+    const job = level.job ?? 'painting';
+    if (job === 'painting' || job === 'swap') findTile(level, 'P');
+    if (job === 'swap') findTile(level, 'F');
+    if (job === 'safe') findTile(level, 'B');
+    if (job === 'evidence') findTile(level, 'D');
+    if (job === 'cash') assert.ok(countTiles(level, '$') >= (level.cashNeeded ?? 1), 'not enough cash on the map');
+    if (job === 'boss') assert.equal(level.guards.filter((g) => g.boss).length, 1, 'a boss job needs one boss');
     for (const d of [...(level.doors ?? []), ...(level.keys ?? [])]) {
       assert.ok(!isWall(level, d.at), 'doors and keys sit on floor tiles');
     }
@@ -37,8 +45,8 @@ for (const level of LEVELS) {
 }
 
 test('nights cycle through the level list', () => {
-  assert.equal(nightForDate(new Date(Date.UTC(2026, 10, 18, 12))), 1);
-  assert.equal(nightForDate(new Date(Date.UTC(2026, 10, 19, 0))), 2);
+  assert.equal(nightForDate(new Date(Date.UTC(2026, 10, 23, 12))), 1);
+  assert.equal(nightForDate(new Date(Date.UTC(2026, 10, 24, 0))), 2);
   assert.equal(levelForNight(1).id, LEVELS[0]?.id);
   assert.equal(levelForNight(LEVELS.length + 1).id, LEVELS[0]?.id);
 });

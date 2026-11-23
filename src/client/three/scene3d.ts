@@ -1,13 +1,5 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { HorizontalTiltShiftShader } from 'three/addons/shaders/HorizontalTiltShiftShader.js';
-import { VerticalTiltShiftShader } from 'three/addons/shaders/VerticalTiltShiftShader.js';
 import {
   type Dir,
   type GameState,
@@ -15,18 +7,28 @@ import {
   type Pos,
   isDog,
   isLit,
+  objectiveDone,
+  SAFE_TURNS,
   isWall,
   samePos,
   sightTiles,
   tileAt,
 } from '../../shared/sim';
 import { makeCanvas } from '../art';
+import { paintTarget } from '../paintings';
 import { type CharacterRig, loadAssets } from './assets';
-import { makeGuard, makeThief } from './characters';
-import { Rain, makeCity } from './city';
+import { USE_CHARACTER_MODELS, makeGuard, makeThief } from './characters';
+import { bossFigure } from './figures';
+import { FACADE_HEIGHT, PARAPET_HEIGHT, facadeCorner, facadeTile, parapetTile, wallLantern } from './architecture';
+import { type Mood, moodFor } from './moods';
+import { APRON, holdingSpot, makeApron } from './apron';
+import { bakeInPlace } from './bake';
+import type { Civilian } from './figures';
 import { THEMES } from './themes';
 import {
+  type DeskProp,
   type DoorProp,
+  type SafeProp,
   type ExitProp,
   type Guard,
   type KeyProp,
@@ -39,48 +41,31 @@ import {
   TERRACE_HEIGHT,
   WALL_HEIGHT,
   floorCanvas,
+  makeCash,
   makeCoatRack,
+  makeDesk,
   makeDoor,
   makeDog,
   makeExit,
+  makeForgery,
   makeKey,
   makeLampPost,
   makePainting,
   makePlant,
-  makeRailing,
+  makeSafe,
   makeSwitch,
-  makeTerrace,
   makeVent,
   rbox,
   setBeamReach,
   setDoorOpen,
   setExitActive,
   setPaintingTaken,
+  setSafe,
   setSwitchOn,
   tileKey,
 } from './models';
 
-/** Cold, desaturated grade: teal shadows, slightly warm highlights. */
-const HORROR_GRADE = {
-  uniforms: { tDiffuse: { value: null } },
-  vertexShader: /* glsl */ `
-    varying vec2 vUv;
-    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
-  `,
-  fragmentShader: /* glsl */ `
-    uniform sampler2D tDiffuse;
-    varying vec2 vUv;
-    void main() {
-      vec4 c = texture2D(tDiffuse, vUv);
-      float l = dot(c.rgb, vec3(0.299, 0.587, 0.114));
-      vec3 grey = mix(c.rgb, vec3(l), 0.32);
-      vec3 tint = mix(vec3(0.82, 0.95, 1.12), vec3(1.06, 1.0, 0.9), smoothstep(0.0, 0.9, l));
-      gl_FragColor = vec4(grey * tint, c.a);
-    }
-  `,
-};
-
-export type BoardInput = { kind: 'tap'; tile: Pos } | { kind: 'swipe'; dir: Dir };
+export type BoardInput = { kind: 'tap'; tile: Pos };
 
 const YAW: Record<Dir, number> = {
   right: 0,
@@ -90,9 +75,18 @@ const YAW: Record<Dir, number> = {
 };
 
 const HOP_MS = 240;
+/** Camera limits for the player's own view. */
+const MIN_ELEV = THREE.MathUtils.degToRad(18);
+const MAX_ELEV = THREE.MathUtils.degToRad(86);
+const MIN_ZOOM = 0.45;
+const MAX_ZOOM = 1.7;
+/** Pixels a press must move before it counts as a drag rather than a tap. */
+const DRAG_THRESHOLD = 8;
 const SLAB_DEPTH = 0.45;
-const BG = 0x0a0d13;
-const PIECE_SCALE = 1.55;
+const BG = 0x3a414d;
+const PIECE_SCALE = 1.65;
+/** Height of the wooden display base under the model. */
+const BASE_HEIGHT = 0.55;
 
 type Motion = {
   from: THREE.Vector3;
@@ -115,12 +109,9 @@ const DIRS: { d: Dir; x: number; y: number }[] = [
 /** The game board as a scale-model diorama on a table, seen from a corner. */
 export class Board3D {
   /** Resolves once the 3D models have loaded. */
-  readonly ready: Promise<void> = loadAssets();
+  readonly ready: Promise<void> = loadAssets(USE_CHARACTER_MODELS);
   onInput: (input: BoardInput) => void = () => {};
   /** Called on each lightning flash so the game can play thunder. */
-  onLightning: () => void = () => {};
-  /** Called as a shower starts or eases off (0 dry … 1 heavy). */
-  onRain: (amount: number) => void = () => {};
 
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -145,6 +136,10 @@ export class Board3D {
   private exit: ExitProp | null = null;
   private switches: { group: string; prop: SwitchProp }[] = [];
   private racks: RackProp[] = [];
+  private cashProps = new Map<string, THREE.Object3D>();
+  private safeProp: SafeProp | null = null;
+  private forgeryProp: THREE.Object3D | null = null;
+  private deskProp: DeskProp | null = null;
   private keyProps: { color: string; prop: KeyProp }[] = [];
   private doorProps: { color: string; prop: DoorProp }[] = [];
   private lamps: RoomLamp[] = [];
@@ -155,33 +150,36 @@ export class Board3D {
   private playerFacing: Dir = 'right';
   private shakeUntil = 0;
   private downAt: { x: number; y: number } | null = null;
+  /** Active pointers, for drag-to-turn and pinch-to-zoom. */
+  private pointers = new Map<number, { x: number; y: number }>();
+  private dragged = false;
+  private pinchStart = 0;
+  /** The default framing, worked out by fitCamera. */
+  private baseYaw = 0;
+  private baseElev = 0;
+  private baseDist = 10;
+  /** The player's own view on top of it: current values ease towards targets. */
+  private view = { yaw: 0, pitch: 0, zoom: 1 };
+  private viewTarget = { yaw: 0, pitch: 0, zoom: 1 };
   private raycaster = new THREE.Raycaster();
   private ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private cameraBase = new THREE.Vector3();
   private lookAt = new THREE.Vector3();
 
-  private composer: EffectComposer;
-  private gtao: GTAOPass | null = null;
-  private bloom: UnrealBloomPass;
-  private tiltH: ShaderPass;
-  private tiltV: ShaderPass;
   private introStart = 0;
-  private mobile = false;
   private hemi: THREE.HemisphereLight;
-  private rain: Rain;
-  private rainAmount = 0;
-  private rainTarget = 0;
-  /** When the weather next changes: showers come and go. */
-  private nextWeather = 0;
+  private skyTex: THREE.CanvasTexture | null = null;
   private lastFrame = 0;
-  private nextLightning = 0;
-  private lightningStart = -1e9;
-  private flicker = new Map<THREE.PointLight, number>();
   /** Animated rigs for each piece's group, and when a one-off animation ends. */
   private rigs = new Map<THREE.Object3D, CharacterRig[]>();
   private holdAnim = new Map<THREE.Object3D, number>();
   private outroStart = 0;
   private benched = new Set<string>();
+  /** Knocked-out pieces in the holding area, glaring at Wren. */
+  private angry = new Map<THREE.Object3D, { mark: THREE.Sprite; phase: number }>();
+  private angerTex: THREE.CanvasTexture | null = null;
+  private civilians: { c: Civilian; yaw: number; phase: number }[] = [];
+  private episode = 1;
   private topples = new Map<THREE.Object3D, { start: number; from: THREE.Vector3; to: THREE.Vector3; yaw: number }>();
   private dust: { mesh: THREE.Mesh; vel: THREE.Vector3; start: number }[] = [];
   private dustGeo = new THREE.SphereGeometry(0.025, 6, 4);
@@ -189,89 +187,92 @@ export class Board3D {
 
   constructor(private container: HTMLElement) {
     const mobile = Math.min(window.innerWidth, window.innerHeight) < 600;
-    this.mobile = mobile;
-    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, mobile ? 1.75 : 2));
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    // Capped resolution keeps phones smooth.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(this.renderer.domElement);
 
     // Soft studio reflections so gold, brass, varnish and marble actually shine.
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environmentIntensity = 0.08;
+    this.scene.environmentIntensity = 0.12;
     pmrem.dispose();
 
-    // Post-processing: anti-aliased HDR render, contact shadows (desktop),
-    // glow on lights, and a tilt-shift blur for the miniature look.
-    const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: mobile ? 2 : 4 });
-    this.composer = new EffectComposer(this.renderer, target);
-    this.composer.addPass(new RenderPass(this.scene, this.camera));
-    if (!mobile) {
-      this.gtao = new GTAOPass(this.scene, this.camera, 1, 1);
-      this.gtao.blendIntensity = 0.85;
-      this.gtao.updateGtaoMaterial({ radius: 0.35, thickness: 1.5, scale: 1.2 });
-      this.composer.addPass(this.gtao);
-    }
-    // High threshold: only true light sources (lamps, lantern, EXIT, lenses) glow.
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), mobile ? 0.3 : 0.4, 0.45, 2.2);
-    this.composer.addPass(this.bloom);
-    this.composer.addPass(new ShaderPass(HORROR_GRADE));
-    this.tiltH = new ShaderPass(HorizontalTiltShiftShader);
-    this.tiltV = new ShaderPass(VerticalTiltShiftShader);
-    this.composer.addPass(this.tiltH);
-    this.composer.addPass(this.tiltV);
-    this.composer.addPass(new OutputPass());
 
     this.scene.background = new THREE.Color(BG);
-    this.scene.fog = new THREE.Fog(BG, 20, 40);
 
-    // Stormy night: a cold moon behind clouds, a faint sky fill.
-    this.hemi = new THREE.HemisphereLight(0x7d92c0, 0x1e1814, 0.5);
+    // Dusk: a cool sky fill and a soft key light casting gentle shadows.
+    this.hemi = new THREE.HemisphereLight(0xaebfe6, 0x3c342c, 0.62);
     this.scene.add(this.hemi);
-    this.key = new THREE.DirectionalLight(0xa8bcff, 0.7);
+    this.key = new THREE.DirectionalLight(0xc9d6ff, 0.72);
     this.key.position.set(-6, 11, 4);
     this.key.castShadow = true;
-    const size = mobile ? 1024 : 2048;
+    const size = mobile ? 1024 : 1536;
     this.key.shadow.mapSize.set(size, size);
-    this.key.shadow.bias = -0.0003;
-    this.key.shadow.normalBias = 0.015;
+    this.key.shadow.bias = -0.0008;
+    this.key.shadow.normalBias = 0.035;
     this.key.shadow.radius = 3;
     this.scene.add(this.key, this.key.target);
 
-    this.rain = new Rain(mobile ? 450 : 1400, -SLAB_DEPTH);
-    this.rain.setAmount(0);
-    // Start dry; the first shower rolls in after a while.
-    this.nextWeather = performance.now() + 25000 + Math.random() * 20000;
-    this.scene.add(this.boardGroup, this.fxGroup, this.rain.mesh);
-    this.nextLightning = performance.now() + 4000 + Math.random() * 5000;
+    // A plain backdrop that only catches the model's soft shadow.
+    const shadowCatcher = new THREE.Mesh(
+      new THREE.PlaneGeometry(90, 90),
+      new THREE.ShadowMaterial({ opacity: 0.35 })
+    );
+    shadowCatcher.rotation.x = -Math.PI / 2;
+    shadowCatcher.position.y = -SLAB_DEPTH;
+    shadowCatcher.receiveShadow = true;
+    this.scene.add(shadowCatcher, this.boardGroup, this.fxGroup);
 
     const ro = new ResizeObserver(() => this.resize());
     ro.observe(container);
     this.resize();
 
     const el = this.renderer.domElement;
-    el.addEventListener('pointerdown', (e) => {
-      this.downAt = { x: e.clientX, y: e.clientY };
-    });
+    el.addEventListener('pointerdown', (e) => this.onPointerDown(e));
+    el.addEventListener('pointermove', (e) => this.onPointerMove(e));
     el.addEventListener('pointerup', (e) => this.onPointerUp(e));
+    el.addEventListener('pointercancel', (e) => this.onPointerUp(e, true));
+    el.addEventListener(
+      'wheel',
+      (e) => {
+        e.preventDefault();
+        this.zoomBy(Math.exp(e.deltaY * 0.0012));
+      },
+      { passive: false }
+    );
 
     this.renderer.setAnimationLoop((t) => this.frame(t));
+
+    // ?debug logs draw calls and triangles every few seconds (local testing).
+    if (new URLSearchParams(window.location.search).has('debug')) {
+      window.setInterval(() => {
+        const { calls, triangles } = this.renderer.info.render;
+        console.info(`[hush] draw calls ${calls}, triangles ${triangles}`);
+      }, 2000);
+    }
   }
 
   /* ------------------------------------------------------------ public */
 
-  setLevel(level: Level, state: GameState) {
+  /** Show a level. `episode` (the night number) picks the sky and light. */
+  setLevel(level: Level, state: GameState, episode = 1) {
     const sameLevel = this.level?.id === level.id;
+    this.episode = episode;
+    this.applyMood(moodFor(episode));
     this.level = level;
     this.state = state;
     this.playerFacing = 'right';
     this.motions.clear();
     this.topples.clear();
     this.benched.clear();
+    for (const { mark } of this.angry.values()) mark.visible = false;
+    this.angry.clear();
     this.outroStart = 0;
     if (!sameLevel) this.build(level);
     this.applyState(state, false);
@@ -357,6 +358,10 @@ export class Board3D {
     this.holdAnim.clear();
     this.switches = [];
     this.racks = [];
+    this.cashProps.clear();
+    this.safeProp = null;
+    this.forgeryProp = null;
+    this.deskProp = null;
     this.keyProps = [];
     this.doorProps = [];
     this.lamps = [];
@@ -378,13 +383,58 @@ export class Board3D {
     const style = THEMES[level.theme];
 
     // The model's slab, with a trim line like a scale-model base
-    const slab = new THREE.Mesh(rbox(cols + 0.1, SLAB_DEPTH, rows + 0.1, 0.07), MAT.slab);
+    const slab = new THREE.Mesh(rbox(cols + 0.1, SLAB_DEPTH, rows + 0.1, 0.05), MAT.plasterBase);
     slab.position.y = -SLAB_DEPTH / 2;
     slab.castShadow = true;
     slab.receiveShadow = true;
-    const band = new THREE.Mesh(new THREE.BoxGeometry(cols + 0.12, 0.05, rows + 0.12), MAT.slabDark);
-    band.position.y = -SLAB_DEPTH + 0.06;
-    this.boardGroup.add(slab, band);
+    this.boardGroup.add(slab);
+    // Everything that never moves goes here and is merged into a few meshes.
+    const statics = new THREE.Group();
+
+    // The non-playable apron with bystanders, café tables, palms and a car
+    const apron = makeApron(cols, rows, level.theme, SLAB_DEPTH, cols * 13 + rows * 7 + level.id.length);
+    statics.add(apron.group);
+
+    // A chunky moulded wooden display base under it all, with a brass plaque
+    const W = cols + APRON + 0.6;
+    const D = rows + APRON + 0.6;
+    const cx = APRON / 2;
+    const cz = APRON / 2;
+    const base = new THREE.Mesh(rbox(W, BASE_HEIGHT, D, 0.03), MAT.wood);
+    base.position.set(cx, -SLAB_DEPTH - BASE_HEIGHT / 2, cz);
+    const lip = new THREE.Mesh(rbox(W + 0.08, 0.06, D + 0.08, 0.02), MAT.wood);
+    lip.position.set(cx, -SLAB_DEPTH - 0.02, cz);
+    const groove = new THREE.Mesh(rbox(W + 0.03, 0.03, D + 0.03, 0.01), MAT.slabDark);
+    groove.position.set(cx, -SLAB_DEPTH - BASE_HEIGHT * 0.62, cz);
+    const foot = new THREE.Mesh(rbox(W + 0.14, 0.08, D + 0.14, 0.02), MAT.wood);
+    foot.position.set(cx, -SLAB_DEPTH - BASE_HEIGHT - 0.02, cz);
+    for (const m of [base, lip, foot]) {
+      m.castShadow = true;
+      m.receiveShadow = true;
+    }
+    const [plateCanvas, pc] = makeCanvas(640, 110);
+    const brass = pc.createLinearGradient(0, 0, 640, 110);
+    brass.addColorStop(0, '#f3dc9a');
+    brass.addColorStop(0.5, '#c9a046');
+    brass.addColorStop(1, '#e8c76e');
+    pc.fillStyle = brass;
+    pc.fillRect(0, 0, 640, 110);
+    pc.strokeStyle = 'rgba(70,45,5,0.7)';
+    pc.lineWidth = 6;
+    pc.strokeRect(8, 8, 624, 94);
+    pc.fillStyle = '#3b2a0c';
+    pc.font = 'bold 44px Georgia, serif';
+    pc.textAlign = 'center';
+    pc.textBaseline = 'middle';
+    pc.fillText(`Night ${this.episode} · ${level.title}`, 320, 58);
+    const plateTex = new THREE.CanvasTexture(plateCanvas);
+    plateTex.colorSpace = THREE.SRGBColorSpace;
+    const plaque = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.4, 0.42),
+      new THREE.MeshStandardMaterial({ map: plateTex, metalness: 0.6, roughness: 0.35 })
+    );
+    plaque.position.set(cx, -SLAB_DEPTH - BASE_HEIGHT * 0.36, cz + D / 2 + 0.004);
+    statics.add(base, lip, groove, foot, plaque);
 
     // The theme's floor with the path network, plus an emissive copy for lamp pools
     this.floorBase = floorCanvas(level, style.floor, style.ink);
@@ -424,46 +474,60 @@ export class Board3D {
             y * 31 + x
           );
           wall.position.copy(this.world(p));
-          this.boardGroup.add(wall);
+          statics.add(wall);
           continue;
         }
 
-        // Terrace ring: slab, balustrade facing the floor, and some decor
-        const t = makeTerrace();
-        t.material = style.terrace;
-        t.position.copy(this.world(p, 0));
-        t.position.y = TERRACE_HEIGHT / 2;
-        this.boardGroup.add(t);
-        const rails: [boolean, number][] = [
-          [open(1, 0), 0],
-          [open(0, -1), Math.PI / 2],
-          [open(-1, 0), Math.PI],
-          [open(0, 1), -Math.PI / 2],
-        ];
-        for (const [isOpen, rot] of rails) {
-          if (!isOpen) continue;
-          const rail = style.rail?.(rot, x * 17 + y * 5) ?? makeRailing(rot);
-          rail.position.copy(this.world(p));
-          this.boardGroup.add(rail);
+        // The building: tall facades along the back and left, low
+        // balustrades along the camera-side front and right.
+        const back = y === 0;
+        const left = x === 0;
+        const front = y === rows - 1;
+        const right = x === cols - 1;
+        const pal = style.palette;
+        const seed = x * 31 + y * 17 + level.id.length;
+        let piece: THREE.Object3D;
+        if (back || left) {
+          const corner = (back && left) || (back && right) || (left && front);
+          if (corner) piece = facadeCorner(pal);
+          else {
+            piece = facadeTile(pal, seed, !lampSpots.has(tileKey(p)) && seed % 5 === 0);
+            piece.rotation.y = back ? 0 : Math.PI / 2;
+          }
+        } else {
+          piece = parapetTile(pal);
+          piece.rotation.y = front ? Math.PI : -Math.PI / 2;
+          if (!lampSpots.has(tileKey(p))) {
+            const decor = style.decor(seed, false);
+            if (decor) {
+              decor.position.y += PARAPET_HEIGHT * 0.45 - TERRACE_HEIGHT;
+              decor.scale.multiplyScalar(0.8);
+              decor.position.add(this.world(p));
+              statics.add(decor);
+            }
+          }
         }
-        if (lampSpots.has(tileKey(p))) continue;
-        // Keep tall decor off the camera-side row so it never hides the board.
-        const decor = style.decor(x * 13 + y * 7 + level.id.length, y < rows - 1);
-        if (decor) {
-          if (x === 0 || x === cols - 1) decor.rotation.y += Math.PI / 2;
-          decor.position.add(this.world(p));
-          this.boardGroup.add(decor);
-        }
+        piece.position.copy(this.world(p));
+        statics.add(piece);
       }
     }
+
+    this.boardGroup.add(statics);
+    bakeInPlace(statics);
+    // Read each bystander's facing after baking re-homes them.
+    this.civilians = apron.civilians.map((c, i) => ({ c, yaw: c.group.rotation.y, phase: i * 1.7 }));
 
     // Lamp posts, one per lit room
     for (const [key, tiles] of lampSpots) {
       const [lx, ly] = key.split(',').map(Number);
       if (lx === undefined || ly === undefined) continue;
-      const lamp = makeLampPost();
+      // Lanterns hang on facades; posts stand on balustrades and inner walls.
+      const onFacade = (ly === 0 || lx === 0) && this.isBorder({ x: lx, y: ly });
+      const lamp = onFacade ? wallLantern() : makeLampPost();
       lamp.group.position.copy(this.world({ x: lx, y: ly }));
-      if (!this.isBorder({ x: lx, y: ly })) lamp.group.position.y = WALL_HEIGHT + 0.03 - TERRACE_HEIGHT;
+      if (onFacade) lamp.group.rotation.y = ly === 0 ? 0 : Math.PI / 2;
+      else if (this.isBorder({ x: lx, y: ly })) lamp.group.position.y = PARAPET_HEIGHT * 0.45 - TERRACE_HEIGHT;
+      else lamp.group.position.y = WALL_HEIGHT + 0.03 - TERRACE_HEIGHT;
       lamp.light.distance = 2.6 + Math.sqrt(tiles.length) * 1.2;
       this.boardGroup.add(lamp.group);
       this.lamps.push({ lamp, tiles });
@@ -474,9 +538,26 @@ export class Board3D {
       for (let x = 0; x < cols; x++) {
         const ch = tileAt(level, { x, y });
         if (ch === 'P') {
-          this.painting = makePainting();
+          this.painting = makePainting(paintTarget(level.id));
           this.painting.group.position.copy(this.world({ x, y }));
           this.boardGroup.add(this.painting.group);
+        } else if (ch === '$') {
+          const cash = makeCash();
+          cash.position.copy(this.world({ x, y }));
+          this.boardGroup.add(cash);
+          this.cashProps.set(`${x},${y}`, cash);
+        } else if (ch === 'B') {
+          this.safeProp = makeSafe();
+          this.safeProp.group.position.copy(this.world({ x, y }));
+          this.boardGroup.add(this.safeProp.group);
+        } else if (ch === 'F') {
+          this.forgeryProp = makeForgery();
+          this.forgeryProp.position.copy(this.world({ x, y }));
+          this.boardGroup.add(this.forgeryProp);
+        } else if (ch === 'D') {
+          this.deskProp = makeDesk();
+          this.deskProp.group.position.copy(this.world({ x, y }));
+          this.boardGroup.add(this.deskProp.group);
         } else if (ch === 'U') {
           const rack = makeCoatRack();
           rack.group.position.copy(this.world({ x, y }));
@@ -527,15 +608,15 @@ export class Board3D {
     this.thief.group.scale.setScalar(PIECE_SCALE);
     this.boardGroup.add(this.thief.group);
     this.rigs.set(this.thief.group, this.thief.rigs);
-    for (const g of level.guards) {
-      const guard = g.dog ? makeDog() : makeGuard();
+    level.guards.forEach((g, i) => {
+      const guard = g.boss ? bossFigure() : g.dog ? makeDog() : makeGuard(i);
       guard.group.scale.setScalar(PIECE_SCALE);
       this.guards.set(g.id, guard);
       this.rigs.set(guard.group, guard.rigs);
       this.boardGroup.add(guard.group);
-    }
+    });
 
-    const half = Math.max(cols, rows) / 2 + 1.5;
+    const half = Math.max(cols, rows) / 2 + 1.5 + APRON;
     const sc = this.key.shadow.camera;
     sc.left = -half;
     sc.right = half;
@@ -546,11 +627,6 @@ export class Board3D {
     sc.updateProjectionMatrix();
 
     this.fitCamera();
-    const toCamera = new THREE.Vector2(
-      this.cameraBase.x - this.lookAt.x,
-      this.cameraBase.z - this.lookAt.z
-    ).normalize();
-    this.boardGroup.add(makeCity(cols, rows, -SLAB_DEPTH, toCamera, this.mobile));
     this.introStart = performance.now();
   }
 
@@ -612,11 +688,14 @@ export class Board3D {
     for (const { lamp, tiles } of this.lamps) {
       const on = tiles.some((t) => isLit(level, state.switchesOff, t));
       lamp.light.intensity = on ? Math.min(9, 4 + tiles.length * 0.45) : 0;
-      lamp.light.userData.base = lamp.light.intensity;
       lamp.glow.emissiveIntensity = on ? 2.2 : 0.05;
     }
     if (this.painting) setPaintingTaken(this.painting, state.hasPainting);
-    if (this.exit) setExitActive(this.exit, state.hasPainting);
+    if (this.exit) setExitActive(this.exit, objectiveDone(level, state));
+    for (const [key, cash] of this.cashProps) cash.visible = !state.cash.includes(key);
+    if (this.safeProp) setSafe(this.safeProp, state.safeTurns / SAFE_TURNS, state.safeOpen);
+    if (this.forgeryProp) this.forgeryProp.visible = !state.forgery;
+    if (this.deskProp) this.deskProp.file.visible = state.planted;
     for (const s of this.switches) setSwitchOn(s.prop, !state.switchesOff.includes(s.group));
     for (const r of this.racks) r.uniform.visible = !state.disguised;
     for (const k of this.keyProps) k.prop.key.visible = !state.keys.includes(k.color);
@@ -628,12 +707,14 @@ export class Board3D {
     for (const gs of state.guards) {
       const guard = this.guards.get(gs.id);
       if (!guard) continue;
+      const target = guard.group.getObjectByName('target');
+      if (target) target.visible = !gs.out;
       if (gs.out) {
         // Knocked out: topples over, then is set aside next to the model.
         guard.beam.visible = false;
         guard.spot.intensity = 0;
         guard.alert.visible = false;
-        const spot = new THREE.Vector3(this.cols / 2 + 0.55, -SLAB_DEPTH, -this.rows / 2 + 0.6 + benched * 0.55);
+        const spot = holdingSpot(this.cols, this.rows, benched);
         benched += 1;
         if (this.benched.has(gs.id)) continue;
         this.benched.add(gs.id);
@@ -649,7 +730,8 @@ export class Board3D {
           });
         } else {
           guard.group.position.copy(spot);
-          guard.group.rotation.set(0, Math.PI / 2, rigs.length ? 0 : Math.PI / 2);
+          guard.group.rotation.set(0, Math.PI / 2, 0);
+          this.makeAngry(guard.group);
         }
         continue;
       }
@@ -805,9 +887,6 @@ export class Board3D {
     const now = performance.now();
     const dt = Math.min(0.05, (now - (this.lastFrame || now)) / 1000);
     this.lastFrame = now;
-    this.weather(now, dt);
-    this.rain.update(dt);
-    this.storm(now);
     for (const [obj, m] of this.motions) {
       const t = Math.min(1, (now - m.start) / HOP_MS);
       const e = 1 - Math.pow(1 - t, 3);
@@ -821,6 +900,7 @@ export class Board3D {
       }
     }
     this.animateTopples(now);
+    this.animateAngry(now);
     for (const [obj, list] of this.rigs) {
       for (const r of list) r.mixer.update(dt);
       const until = this.holdAnim.get(obj);
@@ -830,6 +910,11 @@ export class Board3D {
       }
     }
     this.animateDust(now);
+    // Bystanders shift their weight and look around.
+    for (const { c, yaw, phase } of this.civilians) {
+      c.head.rotation.y = Math.sin(now * 0.0005 + phase) * 0.55;
+      c.group.rotation.y = yaw + Math.sin(now * 0.0003 + phase * 2) * 0.12;
+    }
     if (this.thief) {
       this.thief.lantern.intensity = 1.2 + Math.sin(time * 0.011) * 0.1 + Math.sin(time * 0.027) * 0.06;
     }
@@ -845,67 +930,45 @@ export class Board3D {
       this.camera.position.y += (Math.random() - 0.5) * 0.12 * k;
     }
     this.camera.lookAt(this.lookAt);
-    this.composer.render();
+    this.renderer.render(this.scene, this.camera);
   }
 
-  /** Showers of 15–30 s with 45–90 s dry spells, fading in and out over a few seconds. */
-  private weather(now: number, dt: number) {
-    if (now > this.nextWeather) {
-      const raining = this.rainTarget > 0;
-      this.rainTarget = raining ? 0 : 0.6 + Math.random() * 0.4;
-      this.nextWeather = now + (raining ? 45000 + Math.random() * 45000 : 15000 + Math.random() * 15000);
-    }
-    const before = this.rainAmount;
-    const step = dt / 4;
-    this.rainAmount += Math.max(-step, Math.min(step, this.rainTarget - this.rainAmount));
-    if (Math.abs(this.rainAmount - before) > 0.0001) {
-      this.rain.setAmount(this.rainAmount);
-      this.onRain(this.rainAmount);
-    }
-  }
-
-  /**
-   * Lightning every so often (a double flash that lights the whole city),
-   * and lamps that now and then stutter.
-   */
-  private storm(now: number) {
-    if (now > this.nextLightning) {
-      this.lightningStart = now;
-      this.nextLightning = now + 7000 + Math.random() * 9000;
-      this.onLightning();
-    }
-    const t = now - this.lightningStart;
-    let flash = 0;
-    if (t < 90) flash = 1;
-    else if (t < 170) flash = 0.15;
-    else if (t < 260) flash = 0.75;
-    else if (t < 700) flash = 0.75 * (1 - (t - 260) / 440);
-    this.key.intensity = 0.7 + flash * 4;
-    this.hemi.intensity = 0.5 + flash * 1.2;
-    if (this.scene.background instanceof THREE.Color) {
-      this.scene.background.setHex(BG).lerp(new THREE.Color(0x5a6a88), flash * 0.6);
-    }
-    if (this.scene.fog instanceof THREE.Fog) this.scene.fog.color.setHex(BG).lerp(new THREE.Color(0x5a6a88), flash * 0.6);
-
-    for (const { lamp } of this.lamps) {
-      const base = typeof lamp.light.userData.base === 'number' ? lamp.light.userData.base : 0;
-      if (base === 0) continue;
-      const until = this.flicker.get(lamp.light) ?? 0;
-      if (now < until) {
-        const on = Math.random() < 0.35;
-        lamp.light.intensity = on ? base : base * 0.08;
-        lamp.glow.emissiveIntensity = on ? 2.2 : 0.2;
-      } else {
-        lamp.light.intensity = base;
-        lamp.glow.emissiveIntensity = 2.2;
-        if (Math.random() < 0.0025) this.flicker.set(lamp.light, now + 250 + Math.random() * 500);
-      }
-    }
+  /** Colour grading without post-processing: a gradient sky and matching light. */
+  private applyMood(mood: Mood) {
+    const [canvas, ctx] = makeCanvas(4, 256);
+    const g = ctx.createLinearGradient(0, 0, 0, 256);
+    g.addColorStop(0, mood.sky[0]);
+    g.addColorStop(0.55, mood.sky[1]);
+    g.addColorStop(1, mood.sky[2]);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 4, 256);
+    this.skyTex?.dispose();
+    this.skyTex = new THREE.CanvasTexture(canvas);
+    this.skyTex.colorSpace = THREE.SRGBColorSpace;
+    this.scene.background = this.skyTex;
+    this.hemi.color.setHex(mood.hemiSky);
+    this.hemi.groundColor.setHex(mood.hemiGround);
+    this.hemi.intensity = mood.hemi;
+    this.key.color.setHex(mood.key);
+    this.key.intensity = mood.keyIntensity;
+    this.key.position.set(...mood.keyPos);
+    this.renderer.toneMappingExposure = mood.exposure;
   }
 
   /** Glide in when a level opens; drift back and around after an escape. */
   private cameraPose(now: number): THREE.Vector3 {
-    const offset = this.cameraBase.clone().sub(this.lookAt);
+    // Ease the player's view towards where they dragged or pinched.
+    for (const key of ['yaw', 'pitch', 'zoom'] as const) {
+      this.view[key] += (this.viewTarget[key] - this.view[key]) * 0.2;
+    }
+    const elev = THREE.MathUtils.clamp(this.baseElev + this.view.pitch, MIN_ELEV, MAX_ELEV);
+    const yaw = this.baseYaw + this.view.yaw;
+    const dist = this.baseDist * this.view.zoom;
+    const offset = new THREE.Vector3(
+      Math.sin(yaw) * Math.cos(elev),
+      Math.sin(elev),
+      Math.cos(yaw) * Math.cos(elev)
+    ).multiplyScalar(dist);
     const ease = (t: number) => 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3);
     let scale = 1;
     let turn = 0;
@@ -972,6 +1035,70 @@ export class Board3D {
     return (this.holdAnim.get(obj) ?? 0) > performance.now();
   }
 
+  /** A throbbing red anger mark, drawn once and shared. */
+  private angerTexture() {
+    if (this.angerTex) return this.angerTex;
+    const [canvas, ctx] = makeCanvas(128, 128);
+    const vein = (rot: number) => {
+      ctx.save();
+      ctx.translate(64, 64);
+      ctx.rotate(rot);
+      ctx.beginPath();
+      ctx.moveTo(10, 34);
+      ctx.quadraticCurveTo(14, 14, 34, 10);
+      ctx.stroke();
+      ctx.restore();
+    };
+    ctx.lineCap = 'round';
+    for (const [color, width] of [
+      ['#ffffff', 26],
+      ['#e0201a', 14],
+    ] as const) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      for (let i = 0; i < 4; i++) vein((i * Math.PI) / 2);
+    }
+    this.angerTex = new THREE.CanvasTexture(canvas);
+    this.angerTex.colorSpace = THREE.SRGBColorSpace;
+    return this.angerTex;
+  }
+
+  /** Put a knocked-out piece in the holding area's angry crowd. */
+  private makeAngry(obj: THREE.Object3D) {
+    if (this.angry.has(obj)) return;
+    let mark = obj.getObjectByName('anger');
+    if (!(mark instanceof THREE.Sprite)) {
+      mark = new THREE.Sprite(
+        new THREE.SpriteMaterial({ map: this.angerTexture(), depthTest: false, transparent: true })
+      );
+      mark.name = 'anger';
+      mark.renderOrder = 11;
+      obj.add(mark);
+    }
+    if (!(mark instanceof THREE.Sprite)) return;
+    mark.position.set(0.08, 1.02, 0);
+    mark.visible = true;
+    this.angry.set(obj, { mark, phase: this.angry.size * 1.9 });
+  }
+
+  /** Benched pieces turn to glare at Wren, stomp now and then, and fume. */
+  private animateAngry(now: number) {
+    const thief = this.thief?.group.position;
+    if (!thief) return;
+    for (const [obj, { mark, phase }] of this.angry) {
+      const target = Math.atan2(-(thief.z - obj.position.z), thief.x - obj.position.x);
+      let delta = target - obj.rotation.y;
+      while (delta > Math.PI) delta -= Math.PI * 2;
+      while (delta < -Math.PI) delta += Math.PI * 2;
+      obj.rotation.y += delta * 0.12;
+      const s = Math.sin(now * 0.0045 + phase);
+      obj.position.y = s > 0.9 ? (s - 0.9) * 0.9 : 0;
+      const pulse = 0.24 * (1 + 0.18 * Math.sin(now * 0.014 + phase));
+      mark.scale.set(pulse, pulse, 1);
+      mark.position.y = 1.02 + Math.sin(now * 0.006 + phase) * 0.03;
+    }
+  }
+
   /** Knocked-out guards fall over, then hop off the board to the side. */
   private animateTopples(now: number) {
     for (const [obj, a] of this.topples) {
@@ -989,10 +1116,14 @@ export class Board3D {
       const k = 1 - Math.pow(1 - e, 3);
       obj.position.lerpVectors(a.from, a.to, k);
       obj.position.y += Math.sin(Math.PI * e) * 0.7;
-      obj.rotation.set(0, a.yaw + (Math.PI / 2 - a.yaw) * k, animated ? 0 : Math.PI / 2);
+      // Lying down in flight, springing upright as they land.
+      const up = Math.min(1, Math.max(0, (e - 0.65) / 0.35));
+      obj.rotation.set(0, a.yaw + (Math.PI / 2 - a.yaw) * k, animated ? 0 : (Math.PI / 2) * (1 - up));
       if (e >= 1) {
         this.topples.delete(obj);
         this.puff(a.to.clone());
+        for (const r of this.rigs.get(obj) ?? []) r.play('Idle', { fade: 0.3 });
+        this.makeAngry(obj);
       }
     }
   }
@@ -1007,17 +1138,6 @@ export class Board3D {
     this.renderer.domElement.style.height = '100%';
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.composer.setSize(w, h);
-    const pr = this.renderer.getPixelRatio();
-    const set = (pass: ShaderPass, name: string, value: number) => {
-      const u = pass.uniforms[name];
-      if (u) u.value = value;
-    };
-    // Blur strength in CSS pixels, so phones and desktops look the same.
-    set(this.tiltH, 'h', 1.4 / (w * pr));
-    set(this.tiltV, 'v', 1.4 / (h * pr));
-    set(this.tiltH, 'r', 0.5);
-    set(this.tiltV, 'r', 0.5);
     this.fitCamera();
   }
 
@@ -1029,12 +1149,13 @@ export class Board3D {
     const halfW = this.cols / 2 + 0.1;
     const halfD = this.rows / 2 + 0.1;
     const corners: THREE.Vector3[] = [];
-    for (const x of [-halfW, halfW]) {
-      for (const z of [-halfD, halfD]) {
-        for (const y of [-SLAB_DEPTH, WALL_HEIGHT]) corners.push(new THREE.Vector3(x, y, z));
+    // Frame the board plus the apron along the front and right.
+    for (const x of [-halfW, halfW + APRON]) {
+      for (const z of [-halfD, halfD + APRON]) {
+        for (const y of [-SLAB_DEPTH - BASE_HEIGHT, FACADE_HEIGHT]) corners.push(new THREE.Vector3(x, y, z));
       }
     }
-    this.lookAt.set(0, -0.1, 0.2);
+    this.lookAt.set(APRON * 0.4, -0.1, 0.2 + APRON * 0.4);
     const dir = new THREE.Vector3(
       Math.sin(yaw) * Math.cos(elevation),
       Math.sin(elevation),
@@ -1052,6 +1173,9 @@ export class Board3D {
       if (fits) break;
     }
     this.cameraBase.copy(this.camera.position);
+    this.baseYaw = yaw;
+    this.baseElev = elevation;
+    this.baseDist = dist;
     if (this.scene.fog instanceof THREE.Fog) {
       this.scene.fog.near = dist + 2;
       this.scene.fog.far = dist + 30;
@@ -1070,27 +1194,64 @@ export class Board3D {
     return this.raycaster.ray.intersectPlane(this.ground, hit);
   }
 
-  private onPointerUp(e: PointerEvent) {
-    const start = this.downAt;
-    this.downAt = null;
-    if (!start) return;
-    const dx = e.clientX - start.x;
-    const dy = e.clientY - start.y;
-    if (Math.max(Math.abs(dx), Math.abs(dy)) > 28) {
-      // The camera is turned, so read the swipe as a direction on the floor.
-      const a = this.groundAt(start.x, start.y);
-      const b = this.groundAt(e.clientX, e.clientY);
-      let dir: Dir;
-      if (a && b) {
-        const wx = b.x - a.x;
-        const wz = b.z - a.z;
-        dir = Math.abs(wx) > Math.abs(wz) ? (wx > 0 ? 'right' : 'left') : wz > 0 ? 'down' : 'up';
-      } else {
-        dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
-      }
-      this.onInput({ kind: 'swipe', dir });
+  /** Back to the default framing, smoothly. */
+  resetView() {
+    this.viewTarget = { yaw: 0, pitch: 0, zoom: 1 };
+  }
+
+  private zoomBy(factor: number) {
+    this.viewTarget.zoom = THREE.MathUtils.clamp(this.viewTarget.zoom * factor, MIN_ZOOM, MAX_ZOOM);
+  }
+
+  private onPointerDown(e: PointerEvent) {
+    this.renderer.domElement.setPointerCapture(e.pointerId);
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this.pointers.size === 1) {
+      this.downAt = { x: e.clientX, y: e.clientY };
+      this.dragged = false;
+    } else if (this.pointers.size === 2) {
+      // A second finger starts a pinch, never a tap.
+      this.dragged = true;
+      this.pinchStart = this.pinchDistance();
+    }
+  }
+
+  private pinchDistance() {
+    const [a, b] = [...this.pointers.values()];
+    return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+  }
+
+  /** One finger turns and tilts the model; two fingers pinch to zoom. */
+  private onPointerMove(e: PointerEvent) {
+    const last = this.pointers.get(e.pointerId);
+    if (!last) return;
+    const dx = e.clientX - last.x;
+    const dy = e.clientY - last.y;
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (this.pointers.size >= 2) {
+      const d = this.pinchDistance();
+      if (this.pinchStart > 0 && d > 0) this.zoomBy(this.pinchStart / d);
+      this.pinchStart = d;
       return;
     }
+    const start = this.downAt;
+    if (!start) return;
+    if (!this.dragged && Math.hypot(e.clientX - start.x, e.clientY - start.y) < DRAG_THRESHOLD) return;
+    this.dragged = true;
+    this.viewTarget.yaw -= dx * 0.008;
+    const minPitch = MIN_ELEV - this.baseElev;
+    const maxPitch = MAX_ELEV - this.baseElev;
+    this.viewTarget.pitch = THREE.MathUtils.clamp(this.viewTarget.pitch + dy * 0.006, minPitch, maxPitch);
+  }
+
+  /** A press that didn't drag is a tap on a tile. */
+  private onPointerUp(e: PointerEvent, cancelled = false) {
+    this.pointers.delete(e.pointerId);
+    if (this.pointers.size > 0) return;
+    const start = this.downAt;
+    this.downAt = null;
+    if (!start || this.dragged || cancelled) return;
     const hit = this.groundAt(e.clientX, e.clientY);
     if (!hit) return;
     this.onInput({

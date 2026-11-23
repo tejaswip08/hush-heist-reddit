@@ -3,6 +3,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { type Level, type Pos, isWall, tileAt } from '../../shared/sim';
 import { makeCanvas, rng } from '../art';
 import type { CharacterRig } from './assets';
+import { bakeInPlace, keepDynamic } from './bake';
 
 // Scale-model diorama style: matte materials, clean shapes, figurines on
 // black bases. Pieces face +X, stand on y = 0 and fit inside a 1×1 tile.
@@ -37,7 +38,9 @@ export const varnish = (color: number, roughness = 0.5, clearcoat = 0.6) =>
 
 /** A box with softly rounded edges, so nothing looks razor-cut. */
 export const rbox = (w: number, h: number, d: number, r = 0.02) =>
-  new RoundedBoxGeometry(w, h, d, 3, Math.min(r, w / 2, h / 2, d / 2));
+  // One bevel segment: a soft chamfer is plenty at this camera distance and
+  // costs a fraction of the triangles of a fully rounded edge.
+  new RoundedBoxGeometry(w, h, d, 1, Math.min(r, w / 2, h / 2, d / 2));
 
 /* ------------------------------------------------------------- materials */
 
@@ -64,7 +67,8 @@ export const MAT = {
   skin: varnish(0xdcae8e, 0.55, 0.3),
   boots: varnish(0x1a1a1c, 0.35, 0.8),
   // Guards
-  jacket: varnish(0x2f4c7e, 0.5),
+  // The guards' uniform (orange shirt); Wren wears it when disguised.
+  jacket: varnish(0xe8912e, 0.55),
   shirt: varnish(0xc4d8ec, 0.6),
   trousers: varnish(0x2b2d33, 0.6),
   cap: varnish(0x1d2c4a, 0.45),
@@ -236,9 +240,9 @@ export const artTexture = (seed: number): THREE.CanvasTexture => {
 
 export const pieceBase = (rim: THREE.Material) => {
   const g = new THREE.Group();
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.22, 0.05, 64), MAT.baseBlack);
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.22, 0.05, 28), MAT.baseBlack);
   base.position.y = 0.025;
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.21, 0.01, 8, 48), rim);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.21, 0.01, 6, 28), rim);
   ring.rotation.x = Math.PI / 2;
   ring.position.y = 0.05;
   g.add(base, ring);
@@ -351,6 +355,8 @@ export const makeDog = (): Guard => {
   alert.renderOrder = 10;
   g.add(beam, alert);
   shadowed(g);
+  keepDynamic(beam);
+  bakeInPlace(g);
   return { group: g, beam, spot, alert, dog: true, rigs: [] };
 };
 
@@ -375,7 +381,8 @@ export const setBeamReach = (guard: Guard, tiles: number, scale = 1) => {
 export type PaintingProp = { group: THREE.Group; canvas: THREE.Mesh; light: THREE.PointLight };
 
 /** The night's target: a large gilt-framed canvas on an easel behind ropes. */
-export const makePainting = (): PaintingProp => {
+/** The night's target on its easel; `picture` is the painted canvas (see paintings.ts). */
+export const makePainting = (picture: HTMLCanvasElement): PaintingProp => {
   const g = new THREE.Group();
   for (const [x, z, rz, rx] of [
     [-0.15, 0.05, 0.12, -0.12],
@@ -397,7 +404,7 @@ export const makePainting = (): PaintingProp => {
   const frame = new THREE.Mesh(rbox(0.54, 0.42, 0.04, 0.012), MAT.gold);
   const canvas = new THREE.Mesh(
     new THREE.PlaneGeometry(0.44, 0.32),
-    new THREE.MeshStandardMaterial({ map: artTexture(1), roughness: 0.6 })
+    new THREE.MeshStandardMaterial({ map: canvasTexture(picture), roughness: 0.6 })
   );
   canvas.position.z = 0.021;
   art.add(frame, canvas);
@@ -425,9 +432,8 @@ export const makePainting = (): PaintingProp => {
   );
   g.add(rope);
 
+  // Kept for the setter but not added: a light per prop is costly.
   const light = new THREE.PointLight(0xffd9a0, 1.0, 1.6, 1.5);
-  light.position.set(0, 1.0, 0.45);
-  g.add(light);
   shadowed(g);
   return { group: g, canvas, light };
 };
@@ -480,9 +486,8 @@ export const makeExit = (): ExitProp => {
   board.position.set(0, 0.64, -0.3);
   g.add(pole, board);
 
+  // Kept for the setter but not added: the sign glows through its material.
   const light = new THREE.PointLight(0x3dff8f, 0.3, 1.6, 1.6);
-  light.position.set(0, 0.6, -0.1);
-  g.add(light);
   shadowed(g);
   rug.castShadow = false;
   border.castShadow = false;
@@ -595,9 +600,6 @@ export const makeKey = (): KeyProp => {
   key.add(bow, shaft, bit);
   key.position.set(-0.04, 0.34, 0);
   g.add(key);
-  const glow = new THREE.PointLight(0xffd27a, 0.6, 1.0, 1.6);
-  glow.position.y = 0.4;
-  key.add(glow);
   shadowed(g);
   return { group: g, key };
 };
@@ -813,3 +815,130 @@ export const makeLampPost = (): LampPost => {
 };
 
 export const tileKey = (p: Pos) => `${p.x},${p.y}`;
+
+/* ------------------------------------------------------- job objectives */
+
+const bills = matte(0x5f8f5a, 0.7);
+const billsEdge = matte(0xe9e4cf, 0.8);
+
+/** A small pile of banded cash stacks. Hidden once taken. */
+export const makeCash = (): THREE.Group => {
+  const g = new THREE.Group();
+  const spots: [number, number, number][] = [
+    [-0.07, 0, 0.05],
+    [0.08, 0, -0.04],
+    [0.0, 0.055, 0.0],
+  ];
+  for (const [x, y, z] of spots) {
+    const stack = new THREE.Mesh(rbox(0.16, 0.05, 0.09, 0.008), bills);
+    stack.position.set(x, 0.03 + y, z);
+    stack.rotation.y = x * 4;
+    const band = new THREE.Mesh(rbox(0.03, 0.052, 0.094, 0.004), MAT.gold);
+    band.position.copy(stack.position);
+    band.rotation.y = stack.rotation.y;
+    const edge = new THREE.Mesh(rbox(0.162, 0.01, 0.092, 0.003), billsEdge);
+    edge.position.set(x, 0.03 + y + 0.02, z);
+    edge.rotation.y = stack.rotation.y;
+    g.add(stack, band, edge);
+  }
+  return shadowed(g);
+};
+
+export type SafeProp = { group: THREE.Group; door: THREE.Object3D; dial: THREE.MeshStandardMaterial };
+
+/** A heavy steel safe with a brass dial; the door swings open when cracked. */
+export const makeSafe = (): SafeProp => {
+  const g = new THREE.Group();
+  const steel = matte(0x3c4148, 0.45, 0.6);
+  const body = new THREE.Mesh(rbox(0.5, 0.52, 0.46, 0.03), steel);
+  body.position.y = 0.26;
+  const inside = new THREE.Mesh(rbox(0.42, 0.42, 0.02, 0.01), MAT.baseBlack);
+  inside.position.set(0, 0.27, 0.22);
+  const ledger = new THREE.Mesh(rbox(0.14, 0.04, 0.18, 0.006), MAT.velvet);
+  ledger.position.set(0, 0.12, 0.12);
+  g.add(body, inside, ledger);
+  const hinge = new THREE.Group();
+  hinge.position.set(-0.22, 0, 0.24);
+  const door = new THREE.Mesh(rbox(0.44, 0.44, 0.04, 0.015), steel);
+  door.position.set(0.22, 0.27, 0);
+  const dialMat = new THREE.MeshStandardMaterial({ color: 0xb8913f, metalness: 1, roughness: 0.3, emissive: 0x000000 });
+  const dial = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.03, 20), dialMat);
+  dial.rotation.x = Math.PI / 2;
+  dial.position.set(0.22, 0.3, 0.035);
+  const handle = new THREE.Mesh(rbox(0.04, 0.14, 0.03, 0.008), MAT.brass);
+  handle.position.set(0.36, 0.27, 0.035);
+  hinge.add(door, dial, handle);
+  g.add(hinge);
+  return { group: shadowed(g), door: hinge, dial: dialMat };
+};
+
+/** Show safe-cracking progress (0…1) and swing the door open when cracked. */
+export const setSafe = (s: SafeProp, progress: number, open: boolean) => {
+  s.dial.emissive.setHex(progress > 0 || open ? 0xffb54a : 0x000000);
+  s.dial.emissiveIntensity = open ? 1.5 : progress * 1.2;
+  s.door.rotation.y = open ? -1.7 : 0;
+};
+
+/** The forgery: a canvas wrapped in brown paper and string. */
+export const makeForgery = (): THREE.Group => {
+  const g = new THREE.Group();
+  const paper = matte(0xa77b4f, 0.9);
+  const parcel = new THREE.Mesh(rbox(0.46, 0.34, 0.05, 0.01), paper);
+  parcel.position.set(0, 0.2, 0);
+  parcel.rotation.x = -0.25;
+  const string = matte(0xe9e0c8, 0.8);
+  for (const [w, h] of [
+    [0.47, 0.012],
+    [0.012, 0.35],
+  ] as const) {
+    const s = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.056), string);
+    s.position.copy(parcel.position);
+    s.rotation.copy(parcel.rotation);
+    g.add(s);
+  }
+  const prop = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.03, 0.12), MAT.wood);
+  prop.position.set(0, 0.015, -0.06);
+  g.add(parcel, prop);
+  return shadowed(g);
+};
+
+export type DeskProp = { group: THREE.Group; file: THREE.Object3D };
+
+/** The director's desk with a green banker's lamp; the planted file appears on it. */
+export const makeDesk = (): DeskProp => {
+  const g = new THREE.Group();
+  const top = new THREE.Mesh(rbox(0.7, 0.04, 0.42, 0.01), MAT.wood);
+  top.position.y = 0.34;
+  g.add(top);
+  for (const [x, z] of [
+    [-0.31, -0.17],
+    [0.31, -0.17],
+    [-0.31, 0.17],
+    [0.31, 0.17],
+  ] as const) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.32, 0.04), MAT.wood);
+    leg.position.set(x, 0.16, z);
+    g.add(leg);
+  }
+  const lampBase = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.02, 12), MAT.brass);
+  lampBase.position.set(0.22, 0.37, -0.1);
+  const lampStem = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.12, 6), MAT.brass);
+  lampStem.position.set(0.22, 0.43, -0.1);
+  const shade = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.03, 0.07, 0.05, 12, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0x2f6b3a, emissive: 0x3a8a4a, emissiveIntensity: 0.6, side: THREE.DoubleSide })
+  );
+  shade.position.set(0.22, 0.49, -0.1);
+  g.add(lampBase, lampStem, shade);
+  const file = new THREE.Mesh(rbox(0.2, 0.02, 0.15, 0.004), matte(0xd9b66a, 0.8));
+  file.position.set(-0.1, 0.37, 0.02);
+  file.rotation.y = 0.3;
+  const stamp = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.004, 0.03), MAT.velvet);
+  stamp.position.set(-0.1, 0.382, 0.02);
+  stamp.rotation.y = 0.3;
+  const fileGroup = new THREE.Group();
+  fileGroup.add(file, stamp);
+  fileGroup.visible = false;
+  g.add(fileGroup);
+  return { group: shadowed(g), file: fileGroup };
+};

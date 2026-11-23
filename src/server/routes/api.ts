@@ -125,7 +125,7 @@ api.post('/comment', async (c) => {
     });
   } catch (error) {
     console.error(`Comment failed for ${username}:`, error);
-    await redis.hDel(`night:${night}:commented`, [username]);
+    await redis.hDel(`s1:night:${night}:commented`, [username]);
     return c.json(fail('Couldn’t post the comment'), 500);
   }
   return c.json<CommentResponse>({ type: 'comment', posted: true });

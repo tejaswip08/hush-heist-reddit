@@ -1,0 +1,49 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "hush-heist",
+  "post": {
+    "dir": "dist/client",
+    "entrypoints": {
+      "default": {
+        "inline": true,
+        "entry": "splash.html"
+      },
+      "game": {
+        "entry": "game.html"
+      }
+    }
+  },
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.cjs"
+  },
+  "menu": {
+    "items": [
+      {
+        "label": "Post tonight's Hush job",
+        "description": "Hush",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/post-create"
+      }
+    ]
+  },
+  "triggers": {
+    "onAppInstall": "/internal/triggers/on-app-install"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch"
+  },
+  "scheduler": {
+    "tasks": {
+      "nightly-post": {
+        "endpoint": "/internal/scheduler/nightly-post",
+        "cron": "5 0 * * *"
+      }
+    }
+  },
+  "dev": {
+    "subreddit": "hush_heist_dev"
+  }
+}

@@ -35,7 +35,7 @@ let loading: Promise<void> | null = null;
 const url = (name: string) => `models/${name}.glb`;
 
 /** Load every model once. Missing files are skipped so the game still runs. */
-export const loadAssets = (): Promise<void> => {
+export const loadAssets = (loadCharacters = false): Promise<void> => {
   if (loading) return loading;
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
@@ -61,9 +61,9 @@ export const loadAssets = (): Promise<void> => {
       .catch((error: unknown) => {
         console.warn(`Prop pack ${file} failed to load`, error);
       });
-  loading = Promise.all([pack('halloween'), pack('city'), pack('furniture'), character('wren'), character('guard')]).then(
-    () => undefined
-  );
+  // Characters are only fetched when the animated models are switched on.
+  const people = loadCharacters ? [character('wren'), character('guard')] : [];
+  loading = Promise.all([pack('halloween'), pack('city'), pack('furniture'), ...people]).then(() => undefined);
   return loading;
 };
 

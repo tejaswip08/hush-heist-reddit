@@ -25,6 +25,13 @@
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/post-create"
+      },
+      {
+        "label": "Hush stats",
+        "description": "Who played this night, moves, stars and tries",
+        "location": "post",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/stats"
       }
     ]
   },
@@ -45,5 +52,18 @@
   },
   "dev": {
     "subreddit": "hush_heist_dev"
+  },
+  "forms": {
+    "statsForm": "/internal/form/stats-close"
+  },
+  "permissions": {
+    "reddit": {
+      "enable": true,
+      "scope": "user",
+      "asUser": [
+        "SUBMIT_COMMENT",
+        "SUBSCRIBE_TO_SUBREDDIT"
+      ]
+    }
   }
 }

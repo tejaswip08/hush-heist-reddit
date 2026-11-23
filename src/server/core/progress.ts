@@ -1,9 +1,30 @@
 import { redis } from '@devvit/web/server';
-import type { NightStats } from '../../shared/api';
+import type { BoardEntry, Leaderboard, NightStats } from '../../shared/api';
 
 const userKey = (username: string) => `user:${username}`;
 const nightStatsKey = (night: number) => `night:${night}:stats`;
 const nightBestKey = (night: number) => `night:${night}:best`;
+/** Sorted set: higher score = better run (more stars, then fewer moves). */
+const boardKey = (night: number) => `night:${night}:board`;
+/** Hashes keyed by username: runs started and ended, and times. */
+const triesKey = (night: number) => `night:${night}:tries`;
+const failsKey = (night: number) => `night:${night}:fails`;
+const firstPlayKey = (night: number) => `night:${night}:firstPlay`;
+const firstEscapeKey = (night: number) => `night:${night}:firstEscapeAt`;
+
+const boardScore = (stars: number, moves: number) => stars * 1000 - moves;
+
+/** Count one finished run (caught or escaped) for a player. */
+const countTry = async (username: string, night: number) => {
+  await redis.hIncrBy(triesKey(night), username, 1);
+  await redis.hSetNX(firstPlayKey(night), username, new Date().toISOString());
+};
+
+/** Record a run that ended with Wren being spotted. */
+export const recordCaught = async (username: string, night: number): Promise<void> => {
+  await countTry(username, night);
+  await redis.hIncrBy(failsKey(night), username, 1);
+};
 
 const toInt = (v: string | undefined): number => {
   const n = v ? Number.parseInt(v, 10) : 0;
@@ -52,7 +73,10 @@ export const recordEscape = async (
     (stars === previous.stars && moves < previous.moves)
   ) {
     await redis.hSet(nightBestKey(night), { [username]: `${moves}:${stars}` });
+    await redis.zAdd(boardKey(night), { member: username, score: boardScore(stars, moves) });
   }
+  await countTry(username, night);
+  await redis.hSetNX(firstEscapeKey(night), username, new Date().toISOString());
 
   // hSetNX returns 1 only the first time, so each player counts once.
   const firstEscape = (await redis.hSetNX(`night:${night}:escaped`, username, '1')) === 1;
@@ -72,3 +96,70 @@ export const recordEscape = async (
   }
   return { streak, firstEscape };
 };
+
+const entry = async (night: number, username: string, rank: number): Promise<BoardEntry | null> => {
+  const best = await getBest(username, night);
+  return best ? { rank, username, moves: best.moves, stars: best.stars } : null;
+};
+
+/** The top 10 for a night, and the current player's own place. */
+export const getLeaderboard = async (night: number, username: string | null): Promise<Leaderboard> => {
+  const key = boardKey(night);
+  const [rows, total] = await Promise.all([
+    redis.zRange(key, 0, 9, { by: 'rank', reverse: true }),
+    redis.zCard(key),
+  ]);
+  const top: BoardEntry[] = [];
+  for (const [i, row] of rows.entries()) {
+    const e = await entry(night, row.member, i + 1);
+    if (e) top.push(e);
+  }
+  let me: BoardEntry | null = null;
+  if (username) {
+    const asc = await redis.zRank(key, username);
+    if (asc !== undefined) me = await entry(night, username, total - asc);
+  }
+  return { top, me, total };
+};
+
+export type PlayerReport = {
+  username: string;
+  tries: number;
+  fails: number;
+  best: { moves: number; stars: number } | null;
+  firstPlay: string | null;
+  firstEscape: string | null;
+};
+
+/** Everything recorded about every player on one night (for moderators). */
+export const getNightReport = async (night: number): Promise<PlayerReport[]> => {
+  const [tries, fails, best, firstPlay, firstEscape] = await Promise.all([
+    redis.hGetAll(triesKey(night)),
+    redis.hGetAll(failsKey(night)),
+    redis.hGetAll(nightBestKey(night)),
+    redis.hGetAll(firstPlayKey(night)),
+    redis.hGetAll(firstEscapeKey(night)),
+  ]);
+  const names = new Set([...Object.keys(tries), ...Object.keys(best)]);
+  const rows = [...names].map((username): PlayerReport => {
+    const [m, st] = (best[username] ?? '').split(':').map((v) => Number.parseInt(v, 10));
+    return {
+      username,
+      tries: toInt(tries[username]),
+      fails: toInt(fails[username]),
+      best: m !== undefined && st !== undefined && Number.isFinite(m) && Number.isFinite(st) ? { moves: m, stars: st } : null,
+      firstPlay: firstPlay[username] ?? null,
+      firstEscape: firstEscape[username] ?? null,
+    };
+  });
+  // Best runs first, then players who never escaped.
+  return rows.sort(
+    (a, b) =>
+      (b.best ? boardScore(b.best.stars, b.best.moves) : -1e9) -
+        (a.best ? boardScore(a.best.stars, a.best.moves) : -1e9) || a.username.localeCompare(b.username)
+  );
+};
+
+/** True the first time a player posts their result for a night. */
+export const claimComment = async (username: string, night: number): Promise<boolean> =>
+  (await redis.hSetNX(`night:${night}:commented`, username, '1')) === 1;

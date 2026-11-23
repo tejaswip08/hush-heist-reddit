@@ -12,6 +12,8 @@ const internal = new Hono();
 internal.route('/menu', menu);
 internal.route('/triggers', triggers);
 internal.route('/scheduler', scheduler);
+// The stats form is read-only; closing it just needs an answer.
+internal.post('/form/stats-close', (c) => c.json({}));
 
 app.route('/api', api);
 app.route('/internal', internal);

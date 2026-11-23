@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { type Level, canMove, initialState, ruleMet, step } from './sim.ts';
+import { type Level, canMove, initialState, objectiveDone, ruleMet, step } from './sim.ts';
 
 const base = (overrides: Partial<Level>): Level => ({
   id: 't',
@@ -106,4 +106,62 @@ test('a locked door blocks you and the guards’ view until you hold its key', (
   const back = withKey && step(level, withKey, { type: 'move', dir: 'up' });
   assert.ok(back);
   assert.equal(canMove(level, { ...back, player: { x: 2, y: 1 } }, 'right'), true, 'the door is open');
+});
+
+test('cash job: the exit opens once enough stacks are taken', () => {
+  const level = base({
+    job: 'cash',
+    cashNeeded: 1,
+    rule: 'allCash',
+    map: ['#######', '#S$$..#', '#.....#', '#E....#', '#######'],
+  });
+  const one = step(level, initialState(level), { type: 'move', dir: 'right' });
+  assert.equal(one?.cash.length, 1);
+  assert.ok(one && objectiveDone(level, one), 'one stack is enough');
+  assert.ok(one && !ruleMet(level, one), 'but the star wants both');
+});
+
+test('safe job: two turns standing on the safe cracks it, leaving resets', () => {
+  const level = base({ job: 'safe', map: ['#######', '#SB...#', '#.....#', '#E....#', '#######'] });
+  let s = step(level, initialState(level), { type: 'move', dir: 'right' });
+  assert.ok(s);
+  s = step(level, s, { type: 'wait' });
+  assert.equal(s?.safeOpen, false);
+  const away = s && step(level, s, { type: 'move', dir: 'right' });
+  assert.equal(away?.safeTurns, 0, 'stepping off resets the count');
+  s = s && step(level, s, { type: 'wait' });
+  assert.equal(s?.safeOpen, true);
+});
+
+test('swap job: the painting only comes off the wall with the forgery in hand', () => {
+  const level = base({ job: 'swap', map: ['#######', '#SPF..#', '#.....#', '#E....#', '#######'] });
+  const early = step(level, initialState(level), { type: 'move', dir: 'right' });
+  assert.equal(early?.hasPainting, false);
+  const forged = early && step(level, early, { type: 'move', dir: 'right' });
+  assert.equal(forged?.forgery, true);
+  const swapped = forged && step(level, forged, { type: 'move', dir: 'left' });
+  assert.equal(swapped?.hasPainting, true);
+});
+
+test('evidence job: the file is only planted while nobody watches the desk', () => {
+  const level = base({
+    job: 'evidence',
+    map: ['#######', '#SD...#', '#.....#', '#E....#', '#######'],
+    guards: [{ id: 'g', kind: 'sentry', at: { x: 2, y: 3 }, facings: ['up', 'right'], turnEvery: 1 }],
+  });
+  // Turn one: the guard faces up at the desk, so planting fails.
+  const watchedStep = step(level, initialState(level), { type: 'move', dir: 'right' });
+  assert.equal(watchedStep?.planted, false);
+  // Next turn the guard has turned away, so waiting on the desk plants it.
+  const later = watchedStep && step(level, watchedStep, { type: 'wait' });
+  assert.equal(later?.planted, true);
+});
+
+test('boss job: tagging the boss from behind opens the exit', () => {
+  const level = base({
+    job: 'boss',
+    guards: [{ id: 'b', kind: 'sentry', at: { x: 2, y: 1 }, facings: ['right'], turnEvery: 1, boss: true }],
+  });
+  const tagged = step(level, initialState(level), { type: 'move', dir: 'right' });
+  assert.ok(tagged && objectiveDone(level, tagged));
 });

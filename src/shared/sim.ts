@@ -4,10 +4,27 @@
 export type Dir = 'up' | 'down' | 'left' | 'right';
 export type Pos = { x: number; y: number };
 
-/** `dog: true` makes a guard dog: it sniffs 2 tiles ahead, light or dark. */
+/**
+ * `dog: true` makes a guard dog: it sniffs 2 tiles ahead, light or dark.
+ * `boss: true` marks the target of a "catch the boss" job: a member of the
+ * Gilded Circle who sees like a guard and must be tagged from behind.
+ */
 export type GuardDef =
-  | { id: string; kind: 'patrol'; route: Pos[]; dog?: boolean }
-  | { id: string; kind: 'sentry'; at: Pos; facings: Dir[]; turnEvery: number; dog?: boolean };
+  | { id: string; kind: 'patrol'; route: Pos[]; dog?: boolean; boss?: boolean }
+  | { id: string; kind: 'sentry'; at: Pos; facings: Dir[]; turnEvery: number; dog?: boolean; boss?: boolean };
+
+/**
+ * What the night's job is. Every job ends the same way: finish the
+ * objective, then reach the exit.
+ * - painting: take the painting ('P')
+ * - cash: grab `cashNeeded` of the cash stacks ('$')
+ * - boss: tag the boss guard from behind (a takedown)
+ * - safe: wait on the safe ('B') for SAFE_TURNS turns in a row
+ * - swap: pick up the forgery ('F'), then take the painting ('P')
+ * - evidence: stand on the desk ('D') while no guard is looking at it
+ */
+export type Job = 'painting' | 'cash' | 'boss' | 'safe' | 'swap' | 'evidence';
+export const SAFE_TURNS = 2;
 
 export type SwitchDef = { at: Pos; group: string };
 
@@ -16,7 +33,7 @@ export type DoorDef = { at: Pos; color: string };
 /** A key lying on a floor tile; picking it up opens every door of its colour. */
 export type KeyDef = { at: Pos; color: string };
 
-export type Rule = 'none' | 'noCoin' | 'noVent' | 'shadowsOnly' | 'noTakedown';
+export type Rule = 'none' | 'noCoin' | 'noVent' | 'shadowsOnly' | 'noTakedown' | 'allCash';
 
 /** The setting a level is dressed as. Purely visual; rules are the same. */
 export type Theme = 'gallery' | 'mansion' | 'library' | 'garden' | 'cellar';
@@ -25,6 +42,10 @@ export type Level = {
   id: string;
   title: string;
   theme: Theme;
+  /** Defaults to 'painting'. */
+  job?: Job;
+  /** Cash job: stacks needed to finish (the rest are for the star rule). */
+  cashNeeded?: number;
   brief: string;
   clue: string;
   /**
@@ -75,6 +96,15 @@ export type GameState = {
   keys: string[];
   /** Wearing a guard uniform: guards don't recognise you, dogs still do */
   disguised: boolean;
+  /** Cash stacks taken, as "x,y" */
+  cash: string[];
+  /** Swap job: carrying the forgery */
+  forgery: boolean;
+  /** Safe job: turns spent on the safe in a row, and whether it's open */
+  safeTurns: number;
+  safeOpen: boolean;
+  /** Evidence job: the file is on the desk */
+  planted: boolean;
   caughtBy: string | null;
   noise: Pos | null;
 };
@@ -195,6 +225,11 @@ export const initialState = (level: Level): GameState => ({
   takedowns: 0,
   keys: [],
   disguised: false,
+  cash: [],
+  forgery: false,
+  safeTurns: 0,
+  safeOpen: false,
+  planted: false,
   caughtBy: null,
   noise: null,
 });
@@ -313,7 +348,13 @@ export const step = (level: Level, s: GameState, action: Action): GameState | nu
     }
 
     next.player = to;
-    if (tileAt(level, to) === 'P') next.hasPainting = true;
+    const job = level.job ?? 'painting';
+    const here = tileAt(level, to);
+    // The swap needs the forgery in hand before the painting can come off the wall.
+    if (here === 'P' && (job !== 'swap' || next.forgery)) next.hasPainting = true;
+    if (here === 'F') next.forgery = true;
+    if (here === '$' && !next.cash.includes(`${to.x},${to.y}`)) next.cash = [...next.cash, `${to.x},${to.y}`];
+    if (here !== 'B') next.safeTurns = 0;
     if (tileAt(level, to) === 'U') next.disguised = true;
     const key = keyAt(level, to);
     if (key && !next.keys.includes(key.color)) next.keys = [...next.keys, key.color];
@@ -325,8 +366,14 @@ export const step = (level: Level, s: GameState, action: Action): GameState | nu
         : [...next.switchesOff, sw.group];
     }
 
-    if (tileAt(level, to) === 'E' && next.hasPainting) {
+    if (tileAt(level, to) === 'E' && objectiveDone(level, next)) {
       return { ...next, status: 'escaped' };
+    }
+  } else if (action.type === 'wait') {
+    // Cracking the safe: every turn spent standing on it counts.
+    if (tileAt(level, s.player) === 'B' && !s.safeOpen) {
+      next.safeTurns = s.safeTurns + 1;
+      if (next.safeTurns >= SAFE_TURNS) next.safeOpen = true;
     }
   } else if (action.type === 'coin') {
     if (!canThrowCoin(level, s, action.target)) return null;
@@ -341,6 +388,10 @@ export const step = (level: Level, s: GameState, action: Action): GameState | nu
   }
 
   if (isLit(level, next.switchesOff, next.player)) next.touchedLight = true;
+  // Planting evidence only works while nobody is looking at the desk.
+  if (tileAt(level, next.player) === 'D' && !next.planted && !watched(level, next, next.player)) {
+    next.planted = true;
+  }
 
   const early = spotter(level, next);
   if (early) return { ...next, status: 'caught', caughtBy: early };
@@ -353,6 +404,34 @@ export const step = (level: Level, s: GameState, action: Action): GameState | nu
   return next;
 };
 
+export const countTiles = (level: Level, ch: string): number =>
+  level.map.reduce((n, row) => n + [...row].filter((c) => c === ch).length, 0);
+
+/** Is any active guard looking at this tile right now (light or dark)? */
+export const watched = (level: Level, s: GameState, p: Pos): boolean =>
+  s.guards.some((g) => !g.out && sightTiles(level, g, s.keys).some((t) => samePos(t, p)));
+
+export const bossOf = (level: Level): GuardDef | undefined => level.guards.find((g) => g.boss === true);
+
+/** Has the night's job been done (so the exit opens)? */
+export const objectiveDone = (level: Level, s: GameState): boolean => {
+  switch (level.job ?? 'painting') {
+    case 'painting':
+    case 'swap':
+      return s.hasPainting;
+    case 'cash':
+      return s.cash.length >= (level.cashNeeded ?? countTiles(level, '$'));
+    case 'boss': {
+      const boss = bossOf(level);
+      return boss !== undefined && s.guards.some((g) => g.id === boss.id && g.out);
+    }
+    case 'safe':
+      return s.safeOpen;
+    case 'evidence':
+      return s.planted;
+  }
+};
+
 export const ruleMet = (level: Level, s: GameState): boolean => {
   switch (level.rule) {
     case 'noCoin':
@@ -361,6 +440,8 @@ export const ruleMet = (level: Level, s: GameState): boolean => {
       return !s.usedVent;
     case 'shadowsOnly':
       return !s.touchedLight;
+    case 'allCash':
+      return s.cash.length >= countTiles(level, '$');
     case 'noTakedown':
       return s.takedowns === 0;
     case 'none':
@@ -386,6 +467,11 @@ const stateKey = (s: GameState): string =>
     s.takedowns > 0 ? 1 : 0,
     [...s.keys].sort().join(''),
     s.disguised ? 1 : 0,
+    [...s.cash].sort().join('/'),
+    s.forgery ? 1 : 0,
+    s.safeTurns,
+    s.safeOpen ? 1 : 0,
+    s.planted ? 1 : 0,
     s.guards.map((g) => (g.out ? 'x' : `${g.x},${g.y},${g.facing},${g.step},${g.stunned}`)).join('|'),
   ].join(';');
 

@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { context, reddit, redis } from '@devvit/web/server';
+import { context, reddit } from '@devvit/web/server';
 import type {
   CaughtRequest,
   CommentRequest,
@@ -120,12 +120,15 @@ api.post('/comment', async (c) => {
   try {
     await reddit.submitComment({
       id: postId,
-      text: `**Hush · Night ${night}: ${level.title}**\n\n${stars} · ${best.moves} moves (${verdict})\n\nEscaped without a sound. 🤫`,
-      runAs: 'USER',
+      // Posted by the app (unpublished apps can't post as the player), so it
+      // names the player itself.
+      text: `**u/${username}** escaped **Night ${night}: ${level.title}**\n\n${stars} · ${best.moves} moves (${verdict}) 🤫`,
+      runAs: 'APP',
     });
   } catch (error) {
+    // Keep the claim: the comment may have gone through anyway, and a retry
+    // would post it twice.
     console.error(`Comment failed for ${username}:`, error);
-    await redis.hDel(`s1:night:${night}:commented`, [username]);
     return c.json(fail('Couldn’t post the comment'), 500);
   }
   return c.json<CommentResponse>({ type: 'comment', posted: true });
